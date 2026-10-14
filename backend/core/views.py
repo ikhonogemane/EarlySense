@@ -1348,8 +1348,9 @@ Be specific, evidence-based, and honest. Ground every claim in Step 1's marking.
         response = client.chat.completions.create(
             model=settings.GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4096,
+            max_tokens=settings.GROQ_MAX_TOKENS,
             temperature=0.1,
+            reasoning_effort=settings.GROQ_REASONING_EFFORT,
         )
     except APIError as e:
         # NFR28: never log the API key - the Groq SDK's error objects
@@ -1366,6 +1367,29 @@ Be specific, evidence-based, and honest. Ground every claim in Step 1's marking.
             },
             status=502,
         )
+
+    finish_reason = response.choices[0].finish_reason
+    if finish_reason == "length":
+        # The model (and, for gpt-oss models, its hidden reasoning) used
+        # up the max_tokens budget before finishing the report. Without
+        # this check the half-written report would be returned as if it
+        # were complete, cut off mid-sentence.
+        logger.warning(
+            "Groq script analysis call was truncated (finish_reason=length, "
+            "model=%s, max_tokens=%s)",
+            settings.GROQ_MODEL,
+            settings.GROQ_MAX_TOKENS,
+        )
+        return Response(
+            {
+                "error": (
+                    "The AI analysis service ran out of space before "
+                    "finishing the report. Please try again."
+                )
+            },
+            status=502,
+        )
+
     analysis = response.choices[0].message.content
 
     if not analysis:

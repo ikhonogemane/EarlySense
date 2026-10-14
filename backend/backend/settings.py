@@ -110,3 +110,8 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL')
 # NFR28: values that may change (model names, thresholds) live in
 # settings, not hard-coded in the view.
 GROQ_MODEL = os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
+# openai/gpt-oss-120b supports 'low'/'medium'/'high' reasoning_effort
+# (Groq defaults to 'medium' if unset). 'low' leaves more of
+# GROQ_MAX_TOKENS for the actual report instead of hidden reasoning.
+GROQ_REASONING_EFFORT = os.getenv('GROQ_REASONING_EFFORT', 'low')
+GROQ_MAX_TOKENS = int(os.getenv('GROQ_MAX_TOKENS', '8192'))
