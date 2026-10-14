@@ -115,3 +115,7 @@ GROQ_MODEL = os.getenv('GROQ_MODEL', 'openai/gpt-oss-120b')
 # GROQ_MAX_TOKENS for the actual report instead of hidden reasoning.
 GROQ_REASONING_EFFORT = os.getenv('GROQ_REASONING_EFFORT', 'low')
 GROQ_MAX_TOKENS = int(os.getenv('GROQ_MAX_TOKENS', '8192'))
+
+# Vision model used to transcribe the learner's handwritten script before
+# marking (NFR28).
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.1-flash-lite')

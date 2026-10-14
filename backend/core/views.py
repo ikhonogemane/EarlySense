@@ -1204,6 +1204,7 @@ def extract_pdf_text(f):
 @permission_classes([IsAuthenticated])
 def analyse_script(request):
     from groq import APIError, Groq
+    from google.genai import errors as genai_errors
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -1239,11 +1240,30 @@ def analyse_script(request):
     # silently return nothing useful on a scanned handwritten page).
     try:
         script_text = transcribe_handwritten_script(script_file)
-    except Exception as e:
+    except genai_errors.APIError as e:
+        logger.exception('Gemini handwriting transcription call failed')
+        if e.code in (429, 503):
+            message = (
+                'The handwriting-reading service is busy, please try '
+                'again in a minute.'
+            )
+        else:
+            message = (
+                'The handwriting-reading service could not read the '
+                'script. Please try again or contact the administrator.'
+            )
+        return Response({'error': message}, status=502)
+    except Exception:
+        logger.exception('Gemini handwriting transcription call failed')
         return Response(
-            {'error': f'Could not read the handwritten script: {str(e)}'},
-            status=500
-    )
+            {
+                'error': (
+                    'Could not read the handwritten script. Please try '
+                    'again or contact the administrator.'
+                )
+            },
+            status=502,
+        )
     
     # ── TEMPORARY DEBUG ──────────────────────────────────────────────
     # Prints exactly what Gemini read off the handwritten pages, before
@@ -1474,7 +1494,7 @@ def transcribe_handwritten_script(pdf_file):
     print(f'[Gemini] Sending {page_count} page image(s) in ONE request...')
 
     response = client.models.generate_content(
-        model='gemini-3.1-flash-lite',
+        model=settings.GEMINI_MODEL,
         contents=parts,
     )
 
