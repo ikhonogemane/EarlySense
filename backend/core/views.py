@@ -120,6 +120,18 @@ class UserListCreateView(generics.ListCreateAPIView):
             return UserCreateSerializer
         return UserSerializer
 
+    def create(self, request, *args, **kwargs):
+        # FR02, NFR16 stop-gap: only a System Administrator may create a
+        # user account. This only gates POST — GET (the list) is
+        # unchanged. The central permission layer will replace this
+        # check later.
+        if request.user.role != "System_Admin":
+            return Response(
+                {"error": "Only a System Administrator may create users."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
         user = serializer.save()
         AuditLog.objects.create(
