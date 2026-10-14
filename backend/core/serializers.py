@@ -9,6 +9,24 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id', 'username', 'email', 'full_name', 'role', 'is_active', 'created_at', 'assigned_grade', 'assigned_class_group']
 
+    def get_fields(self):
+        # FR02, NFR16: only a System Administrator may change another
+        # user's role or active status. A non-admin's PATCH/PUT still
+        # goes through for every other field; role/is_active are just
+        # dropped from validated_data, so they silently keep their old
+        # value instead of letting a user self-promote. GET responses
+        # and System_Admin writes are unaffected.
+        fields = super().get_fields()
+        request = self.context.get('request')
+        is_system_admin = bool(
+            request and request.user and request.user.is_authenticated
+            and request.user.role == 'System_Admin'
+        )
+        if not is_system_admin:
+            fields['role'].read_only = True
+            fields['is_active'].read_only = True
+        return fields
+
 class UserCreateSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
     class Meta:
