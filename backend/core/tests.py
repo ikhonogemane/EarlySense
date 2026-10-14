@@ -1,7 +1,9 @@
+from django.db import IntegrityError
+from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import User
+from .models import Role, User, UserRole
 
 
 class UserRoleEscalationTests(APITestCase):
@@ -115,3 +117,59 @@ class UserCreationPermissionTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(User.objects.filter(username='newteacher').exists())
+
+
+class RoleAndUserRoleModelTests(TestCase):
+    """
+    FR02, NFR17, NFR18 - the six-role, many-to-many model. See
+    docs/data-model.md and docs/gap-analysis.md section 6, item 1.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='teacher1',
+            email='teacher1@example.com',
+            password='testpass123',
+            full_name='Test Teacher',
+            role='Educator',
+        )
+
+    def test_seed_migration_created_all_six_roles(self):
+        self.assertEqual(Role.objects.count(), 6)
+        for name in [
+            Role.REGISTER_TEACHER,
+            Role.SUBJECT_TEACHER,
+            Role.GRADE_HEAD,
+            Role.SCHOOL_CLERK,
+            Role.WELLNESS_OFFICE,
+            Role.SYSTEM_ADMINISTRATOR,
+        ]:
+            self.assertTrue(Role.objects.filter(name=name).exists())
+
+    def test_role_str_is_its_name(self):
+        role = Role.objects.get(name=Role.GRADE_HEAD)
+        self.assertEqual(str(role), 'Grade Head')
+
+    def test_user_can_hold_more_than_one_role(self):
+        register_teacher = Role.objects.get(name=Role.REGISTER_TEACHER)
+        subject_teacher = Role.objects.get(name=Role.SUBJECT_TEACHER)
+        UserRole.objects.create(user=self.user, role=register_teacher, grade_scope=8, class_scope='8A')
+        UserRole.objects.create(user=self.user, role=subject_teacher, grade_scope=8, class_scope='8A')
+        self.assertEqual(self.user.userrole_set.count(), 2)
+
+    def test_duplicate_user_role_scope_is_rejected(self):
+        register_teacher = Role.objects.get(name=Role.REGISTER_TEACHER)
+        UserRole.objects.create(user=self.user, role=register_teacher, grade_scope=8, class_scope='8A')
+        with self.assertRaises(IntegrityError):
+            UserRole.objects.create(user=self.user, role=register_teacher, grade_scope=8, class_scope='8A')
+
+    def test_same_role_different_scope_is_allowed(self):
+        register_teacher = Role.objects.get(name=Role.REGISTER_TEACHER)
+        UserRole.objects.create(user=self.user, role=register_teacher, grade_scope=8, class_scope='8A')
+        UserRole.objects.create(user=self.user, role=register_teacher, grade_scope=9, class_scope='9B')
+        self.assertEqual(self.user.userrole_set.count(), 2)
+
+    def test_user_role_str_includes_scope(self):
+        grade_head = Role.objects.get(name=Role.GRADE_HEAD)
+        user_role = UserRole.objects.create(user=self.user, role=grade_head, grade_scope=8)
+        self.assertEqual(str(user_role), 'teacher1 - Grade Head (8)')

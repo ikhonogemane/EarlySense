@@ -52,6 +52,48 @@ class User(AbstractBaseUser, PermissionsMixin):
         return f"{self.full_name} ({self.role})"
 
 
+# ─── ROLE (FR02, NFR17, NFR18) ───────────────────────────
+# Six-role, many-to-many model per docs/data-model.md. Kept alongside the
+# old User.role field for now (docs/gap-analysis.md fix order, step 1);
+# User.role is not read by this model and is removed in a later, separate
+# task once every endpoint has been migrated to UserRole.
+class Role(models.Model):
+    REGISTER_TEACHER = "Register Teacher"
+    SUBJECT_TEACHER = "Subject Teacher"
+    GRADE_HEAD = "Grade Head"
+    SCHOOL_CLERK = "School Clerk"
+    WELLNESS_OFFICE = "Wellness Office"
+    SYSTEM_ADMINISTRATOR = "System Administrator"
+
+    NAME_CHOICES = [
+        (REGISTER_TEACHER, REGISTER_TEACHER),
+        (SUBJECT_TEACHER, SUBJECT_TEACHER),
+        (GRADE_HEAD, GRADE_HEAD),
+        (SCHOOL_CLERK, SCHOOL_CLERK),
+        (WELLNESS_OFFICE, WELLNESS_OFFICE),
+        (SYSTEM_ADMINISTRATOR, SYSTEM_ADMINISTRATOR),
+    ]
+
+    name = models.CharField(max_length=30, choices=NAME_CHOICES, unique=True)
+
+    def __str__(self):
+        return self.name
+
+
+class UserRole(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    role = models.ForeignKey(Role, on_delete=models.CASCADE)
+    grade_scope = models.IntegerField(blank=True, null=True)
+    class_scope = models.CharField(max_length=10, blank=True, null=True)
+
+    class Meta:
+        unique_together = ("user", "role", "grade_scope", "class_scope")
+
+    def __str__(self):
+        scope = f" ({self.grade_scope}{self.class_scope or ''})" if self.grade_scope or self.class_scope else ""
+        return f"{self.user.username} - {self.role.name}{scope}"
+
+
 # ─── LEARNER ─────────────────────────────────────────────
 class Learner(models.Model):
     GENDER_CHOICES = [
