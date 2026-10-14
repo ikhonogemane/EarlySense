@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from django.db.models import Avg, Count
 from django.utils import timezone
 from django.http import HttpResponse
+from django.conf import settings
 from .models import (
     User,
     Learner,
@@ -36,6 +37,7 @@ from .serializers import (
 )
 import csv
 import io
+import logging
 import os
 import re
 
@@ -47,6 +49,8 @@ from reportlab.lib.units import inch
 
 from rest_framework_simplejwt.views import TokenObtainPairView
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+
+logger = logging.getLogger(__name__)
 
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
@@ -1199,7 +1203,7 @@ def extract_pdf_text(f):
 @api_view(["POST"])
 @permission_classes([IsAuthenticated])
 def analyse_script(request):
-    from groq import Groq
+    from groq import APIError, Groq
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -1340,13 +1344,45 @@ Genuine, specific, matching actual performance — not generic.
 Be specific, evidence-based, and honest. Ground every claim in Step 1's marking."""
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     
-    response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=4096,
-        temperature=0.1,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.GROQ_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4096,
+            temperature=0.1,
+        )
+    except APIError as e:
+        # NFR28: never log the API key - the Groq SDK's error objects
+        # carry the response status/body, not the Authorization header,
+        # so this is safe to log as-is.
+        logger.error("Groq script analysis call failed: %s", e)
+        return Response(
+            {
+                "error": (
+                    "The AI analysis service could not be reached or "
+                    "rejected the request. Please try again or contact "
+                    "the administrator."
+                )
+            },
+            status=502,
+        )
     analysis = response.choices[0].message.content
+
+    if not analysis:
+        logger.error(
+            "Groq script analysis call returned an empty response "
+            "(model=%s)",
+            settings.GROQ_MODEL,
+        )
+        return Response(
+            {
+                "error": (
+                    "The AI analysis service returned an empty response. "
+                    "Please try again."
+                )
+            },
+            status=502,
+        )
 
     AuditLog.objects.create(
         user=request.user,
