@@ -43,6 +43,11 @@ const parseTableRow = (line) => {
   return t.split("|").map((c) => c.trim());
 };
 
+// Short cells (marks, scores, question numbers, percentages) should never
+// wrap or break mid-word; longer prose cells (Comments, Diagnosis) still
+// need to wrap normally, just not inside a word.
+const isShortCell = (text) => /^[\d.,/%\s-]{1,12}$/.test(text.trim());
+
 export default function ScriptAnalysis() {
   const [learners, setLearners] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -363,7 +368,14 @@ export default function ScriptAnalysis() {
                 {block.rows.map((row, ri) => (
                   <tr key={ri}>
                     {row.map((cell, ci) => (
-                      <td key={ci} style={styles.td}>
+                      <td
+                        key={ci}
+                        style={
+                          isShortCell(cell)
+                            ? { ...styles.td, whiteSpace: "nowrap" }
+                            : styles.td
+                        }
+                      >
                         {renderInline(cell)}
                       </td>
                     ))}
@@ -1381,12 +1393,15 @@ const styles = {
     textTransform: "uppercase",
     letterSpacing: "0.3px",
     border: "1px solid #E3E1DA",
+    whiteSpace: "nowrap",
+    wordBreak: "normal",
   },
   td: {
     padding: "7px 10px",
     border: "1px solid #E3E1DA",
     color: "#374039",
     verticalAlign: "top",
+    wordBreak: "normal",
   },
   blockquote: {
     borderLeft: "3px solid #0F6B5C",
