@@ -1341,7 +1341,9 @@ Concrete plan matching the learner's actual needs.
 ### 9. Message to the Learner
 Genuine, specific, matching actual performance — not generic.
 
-Be specific, evidence-based, and honest. Ground every claim in Step 1's marking."""
+Be specific, evidence-based, and honest. Ground every claim in Step 1's marking.
+
+Do not add a signature, author name, job title, or date at the end of the report."""
     client = Groq(api_key=os.getenv("GROQ_API_KEY"))
     
     try:
