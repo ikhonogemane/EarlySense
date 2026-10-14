@@ -25,6 +25,24 @@ import {
   ListChecks,
 } from "lucide-react";
 
+// Marker inserted where the AI's literal "<br>" tags were, so renderInline
+// can turn them into a real line break instead of showing the tag as text.
+const BR_MARK = "%%BR%%";
+
+const isTableRow = (line) => /^\|.*\|\s*$/.test(line.trim());
+
+const isTableSeparator = (line) => {
+  const t = line.trim();
+  return /^\|?[\s:|-]+\|?$/.test(t) && t.includes("-");
+};
+
+const parseTableRow = (line) => {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  return t.split("|").map((c) => c.trim());
+};
+
 export default function ScriptAnalysis() {
   const [learners, setLearners] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -129,18 +147,42 @@ export default function ScriptAnalysis() {
     const parts = text.split(/^## /m).filter(Boolean);
     parts.forEach((part) => {
       const lines = part.split("\n");
-      const title = lines[0].replace(/^\d+\.\s*/, "").trim();
+      // Strip any stray "**" the model leaves around a heading it echoed
+      // back in bold, e.g. "**STEP 1 - MARKING**", so the asterisks never
+      // show up in the section title.
+      const title = lines[0]
+        .replace(/^\d+\.\s*/, "")
+        .replace(/\*+/g, "")
+        .trim();
       const content = lines.slice(1).join("\n").trim();
       sections.push({ title, content });
     });
     return sections;
   };
 
+  // Pre-processing applied to the raw AI text before it's split into
+  // sections: collapses the blank lines the model puts between table
+  // rows (which otherwise breaks table parsing), turns literal "<br>"
+  // tags into a marker renderInline renders as a real line break, and
+  // strips LaTeX inline-math delimiters like "\(" and "\)".
+  const normalizeAnalysisText = (text) => {
+    let out = text;
+    out = out.replace(/(\|[^\n]*\|)[ \t]*\n(?:[ \t]*\n)+(?=\|)/g, "$1\n");
+    out = out.replace(/<br\s*\/?>/gi, BR_MARK);
+    out = out.replace(/\\\(/g, "").replace(/\\\)/g, "");
+    return out;
+  };
+
   // Renders **bold** and *italic* spans as real inline formatting instead
   // of stripping the markers.
   const renderInline = (text) => {
-    const parts = text.split(/(\*\*.*?\*\*|\*[^*]+\*)/g).filter(Boolean);
+    const parts = text
+      .split(/(\*\*.*?\*\*|\*[^*]+\*|%%BR%%)/g)
+      .filter(Boolean);
     return parts.map((part, idx) => {
+      if (part === BR_MARK) {
+        return <br key={idx} />;
+      }
       if (/^\*\*(.*)\*\*$/.test(part)) {
         return (
           <strong key={idx} style={styles.strong}>
@@ -276,9 +318,83 @@ export default function ScriptAnalysis() {
 
   const renderContent = (content) => {
     const lines = normalizeFractions(content).split("\n");
-    return lines.map((line, i) => {
+
+    // Group consecutive "| a | b |" rows (with their "|---|---|" separator)
+    // into table blocks before the per-line rendering below, so they
+    // become a real <table> instead of raw pipe text.
+    const blocks = [];
+    let li = 0;
+    while (li < lines.length) {
+      const line = lines[li];
+      if (
+        isTableRow(line) &&
+        li + 1 < lines.length &&
+        isTableSeparator(lines[li + 1])
+      ) {
+        const header = parseTableRow(line);
+        const rows = [];
+        li += 2;
+        while (li < lines.length && isTableRow(lines[li])) {
+          rows.push(parseTableRow(lines[li]));
+          li++;
+        }
+        blocks.push({ type: "table", header, rows });
+      } else {
+        blocks.push({ type: "line", text: line });
+        li++;
+      }
+    }
+
+    return blocks.map((block, i) => {
+      if (block.type === "table") {
+        return (
+          <div key={i} style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  {block.header.map((cell, ci) => (
+                    <th key={ci} style={styles.th}>
+                      {renderInline(cell)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {block.rows.map((row, ri) => (
+                  <tr key={ri}>
+                    {row.map((cell, ci) => (
+                      <td key={ci} style={styles.td}>
+                        {renderInline(cell)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        );
+      }
+
+      const line = block.text;
       const trimmed = line.trim();
       if (!trimmed) return <div key={i} style={{ height: 6 }} />;
+
+      // Horizontal rule: "---", "***" or "___" alone on a line
+      if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+        return <hr key={i} style={styles.hr} />;
+      }
+
+      // Blockquote: "> text". A bare ">" with nothing after it is just
+      // the model's way of leaving a gap, not an empty quote box.
+      if (/^>\s?/.test(trimmed)) {
+        const text = trimmed.replace(/^>\s?/, "");
+        if (!text) return <div key={i} style={{ height: 6 }} />;
+        return (
+          <div key={i} style={styles.blockquote}>
+            {renderInline(text)}
+          </div>
+        );
+      }
 
       // Markdown sub-headings, e.g. "### Root Cause"
       if (/^#{2,4}\s+/.test(trimmed)) {
@@ -428,7 +544,7 @@ export default function ScriptAnalysis() {
           </div>
           <div style={styles.aiBadge}>
             <Brain size={13} style={{ marginRight: 6 }} strokeWidth={1.75} />
-            Groq LLaMA 70B
+            AI-assisted analysis
           </div>
         </div>
 
@@ -793,7 +909,7 @@ export default function ScriptAnalysis() {
 
                   {/* Analysis sections */}
                   <div style={styles.sectionsGrid}>
-                    {parseAnalysis(result.analysis).map((section, i) => {
+                    {parseAnalysis(normalizeAnalysisText(result.analysis)).map((section, i) => {
                       const { Icon, num } = getSectionMeta(section.title, i);
                       return (
                         <div key={i} style={styles.sectionCard}>
@@ -1245,6 +1361,44 @@ const styles = {
     background: "#0F6B5C",
     marginTop: "9px",
     flexShrink: 0,
+  },
+  tableWrap: {
+    overflowX: "auto",
+    margin: "10px 0",
+  },
+  table: {
+    borderCollapse: "collapse",
+    width: "100%",
+    fontSize: "12.5px",
+  },
+  th: {
+    textAlign: "left",
+    padding: "7px 10px",
+    background: "#F0F5F2",
+    color: "#0F6B5C",
+    fontWeight: 700,
+    fontSize: "11px",
+    textTransform: "uppercase",
+    letterSpacing: "0.3px",
+    border: "1px solid #E3E1DA",
+  },
+  td: {
+    padding: "7px 10px",
+    border: "1px solid #E3E1DA",
+    color: "#374039",
+    verticalAlign: "top",
+  },
+  blockquote: {
+    borderLeft: "3px solid #0F6B5C",
+    paddingLeft: "12px",
+    margin: "8px 0",
+    color: "#6B7270",
+    fontStyle: "italic",
+  },
+  hr: {
+    border: "none",
+    borderTop: "1px solid #E3E1DA",
+    margin: "14px 0",
   },
   para: { margin: "0 0 8px 0" },
   subHeading: {
