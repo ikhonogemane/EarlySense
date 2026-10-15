@@ -21,7 +21,14 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault("role", "System_Admin")
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
-        return self.create_user(username, email, password, **extra_fields)
+        user = self.create_user(username, email, password, **extra_fields)
+        # FR02, NFR17, NFR18 - every user created from here on gets the
+        # matching UserRole row(s) too, not just the legacy role string.
+        # sync_user_roles_from_legacy is defined further down this module
+        # (it needs Role/UserRole); resolved at call time, so the forward
+        # reference is safe.
+        sync_user_roles_from_legacy(user)
+        return user
 
 
 class User(AbstractBaseUser, PermissionsMixin):
@@ -92,6 +99,38 @@ class UserRole(models.Model):
     def __str__(self):
         scope = f" ({self.grade_scope}{self.class_scope or ''})" if self.grade_scope or self.class_scope else ""
         return f"{self.user.username} - {self.role.name}{scope}"
+
+
+# Maps each old, single User.role value to the new role(s) it becomes,
+# per docs/gap-analysis.md phase (b). Educator maps to both Register
+# Teacher and Subject Teacher: nothing in the old data distinguishes which
+# of a teacher's classes they're the register teacher for vs. just a
+# subject teacher in, so granting both is the only option that doesn't
+# silently revoke access an Educator already has today.
+LEGACY_ROLE_MAP = {
+    "System_Admin": [Role.SYSTEM_ADMINISTRATOR],
+    "School_Admin": [Role.SCHOOL_CLERK],
+    "LST_Member": [Role.WELLNESS_OFFICE],
+    "Educator": [Role.REGISTER_TEACHER, Role.SUBJECT_TEACHER],
+}
+
+
+def sync_user_roles_from_legacy(user):
+    """
+    Creates the UserRole row(s) matching a user's old, single `role` value
+    and its assigned_grade/assigned_class_group, carrying that scope onto
+    every new role the mapping grants. Idempotent (get_or_create), so it's
+    safe to call more than once for the same user, e.g. on every /users/
+    PATCH until the frontend moves off the old role field in phase (d).
+    """
+    for name in LEGACY_ROLE_MAP.get(user.role, []):
+        role = Role.objects.get(name=name)
+        UserRole.objects.get_or_create(
+            user=user,
+            role=role,
+            grade_scope=user.assigned_grade,
+            class_scope=user.assigned_class_group,
+        )
 
 
 # ─── LEARNER ─────────────────────────────────────────────

@@ -1,9 +1,16 @@
+import importlib
+
+from django.apps import apps
 from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework import status
 from rest_framework.test import APITestCase
 
 from .models import Role, User, UserRole
+
+_map_migration = importlib.import_module(
+    'core.migrations.0007_map_existing_users_to_roles'
+)
 
 
 class UserRoleEscalationTests(APITestCase):
@@ -173,3 +180,98 @@ class RoleAndUserRoleModelTests(TestCase):
         grade_head = Role.objects.get(name=Role.GRADE_HEAD)
         user_role = UserRole.objects.create(user=self.user, role=grade_head, grade_scope=8)
         self.assertEqual(str(user_role), 'teacher1 - Grade Head (8)')
+
+
+class ExistingUserRoleMigrationTests(TestCase):
+    """
+    FR02, NFR17, NFR18 - phase (b): exercises the actual
+    0007_map_existing_users_to_roles migration functions (imported
+    directly, not reimplemented) against a fixture mirroring today's 4
+    real users (see docs/gap-analysis.md phase (b) mapping table).
+    """
+
+    def setUp(self):
+        self.school_clerk_to_be = User.objects.create_user(
+            username='d.mokoena', email='d.mokoena@example.com',
+            password='testpass123', full_name='D Mokoena',
+            role='School_Admin',
+        )
+        self.system_admin_to_be = User.objects.create_user(
+            username='ikho', email='ikho@example.com',
+            password='testpass123', full_name='Ikho',
+            role='System_Admin',
+        )
+        self.wellness_office_to_be = User.objects.create_user(
+            username='n.ndlovu', email='n.ndlovu@example.com',
+            password='testpass123', full_name='N Ndlovu',
+            role='LST_Member',
+        )
+        self.educator_to_be = User.objects.create_user(
+            username='t.sithole', email='t.sithole@example.com',
+            password='testpass123', full_name='T Sithole',
+            role='Educator', assigned_grade=8, assigned_class_group='8A',
+        )
+
+    def _user_roles(self, user):
+        return set(
+            UserRole.objects.filter(user=user).values_list(
+                'role__name', 'grade_scope', 'class_scope'
+            )
+        )
+
+    def test_migration_maps_all_four_existing_users(self):
+        _map_migration.map_existing_users(apps, schema_editor=None)
+
+        self.assertEqual(
+            self._user_roles(self.school_clerk_to_be),
+            {('School Clerk', None, None)},
+        )
+        self.assertEqual(
+            self._user_roles(self.system_admin_to_be),
+            {('System Administrator', None, None)},
+        )
+        self.assertEqual(
+            self._user_roles(self.wellness_office_to_be),
+            {('Wellness Office', None, None)},
+        )
+        self.assertEqual(
+            self._user_roles(self.educator_to_be),
+            {
+                ('Register Teacher', 8, '8A'),
+                ('Subject Teacher', 8, '8A'),
+            },
+        )
+
+    def test_migration_is_idempotent(self):
+        _map_migration.map_existing_users(apps, schema_editor=None)
+        _map_migration.map_existing_users(apps, schema_editor=None)
+        self.assertEqual(UserRole.objects.filter(user=self.educator_to_be).count(), 2)
+
+    def test_migration_is_reversible(self):
+        _map_migration.map_existing_users(apps, schema_editor=None)
+        self.assertTrue(UserRole.objects.filter(user=self.educator_to_be).exists())
+        _map_migration.unmap_existing_users(apps, schema_editor=None)
+        self.assertEqual(UserRole.objects.count(), 0)
+
+    def test_no_user_becomes_grade_head(self):
+        _map_migration.map_existing_users(apps, schema_editor=None)
+        self.assertFalse(
+            UserRole.objects.filter(role__name=Role.GRADE_HEAD).exists()
+        )
+
+
+class CreateSuperuserRoleSyncTests(TestCase):
+    """FR02, NFR17, NFR18 - a newly created superuser also gets the
+    matching UserRole row from now on, not just the legacy role field."""
+
+    def test_create_superuser_creates_matching_user_role(self):
+        admin = User.objects.create_superuser(
+            username='newadmin', email='newadmin@example.com',
+            password='testpass123', full_name='New Admin',
+        )
+        self.assertEqual(admin.role, 'System_Admin')
+        self.assertTrue(
+            UserRole.objects.filter(
+                user=admin, role__name=Role.SYSTEM_ADMINISTRATOR
+            ).exists()
+        )
