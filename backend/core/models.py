@@ -1,4 +1,4 @@
-from django.db import models
+from django.db import models, transaction
 from django.contrib.auth.models import (
     AbstractBaseUser,
     BaseUserManager,
@@ -22,8 +22,10 @@ class UserManager(BaseUserManager):
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
         user = self.create_user(username, email, password, **extra_fields)
-        # FR02, NFR17, NFR18 - every user created from here on gets the
-        # matching UserRole row(s) too, not just the legacy role string.
+        # FR02, NFR17, NFR18 - a superuser created here also gets the
+        # matching UserRole row(s), not just the legacy role string.
+        # create_user itself does not sync: users created through the API
+        # are synced by UserListCreateView.perform_create instead.
         # sync_user_roles_from_legacy is defined further down this module
         # (it needs Role/UserRole); resolved at call time, so the forward
         # reference is safe.
@@ -131,6 +133,24 @@ def sync_user_roles_from_legacy(user):
             grade_scope=user.assigned_grade,
             class_scope=user.assigned_class_group,
         )
+
+
+def replace_user_roles_from_legacy(user):
+    """
+    Like sync_user_roles_from_legacy, but clears every UserRole row this
+    user currently holds first, so a changed `role` (or scope) value never
+    leaves stale rows from their old role behind - e.g. Educator ->
+    School_Admin removes the Register Teacher/Subject Teacher rows instead
+    of leaving them alongside a new School Clerk row. Only call this when
+    role/assigned_grade/assigned_class_group actually changed (a PATCH that
+    doesn't touch them has nothing to replace). Safe only while UserRole
+    rows are derived solely from the legacy role field, which holds true
+    until phase (d) - a role with no legacy mapping (Grade Head) can't yet
+    be assigned any other way.
+    """
+    with transaction.atomic():
+        UserRole.objects.filter(user=user).delete()
+        sync_user_roles_from_legacy(user)
 
 
 # ─── LEARNER ─────────────────────────────────────────────

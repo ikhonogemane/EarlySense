@@ -1,5 +1,5 @@
 from re import search
-from django.db.models import Avg, Count, F
+from django.db.models import Avg, Count, F, Prefetch
 import anthropic
 from django.shortcuts import render
 from rest_framework import generics, status
@@ -12,6 +12,8 @@ from django.http import HttpResponse
 from django.conf import settings
 from .models import (
     User,
+    Role,
+    UserRole,
     Learner,
     AttendanceRecord,
     MarkRecord,
@@ -21,6 +23,8 @@ from .models import (
     Referral,
     AuditLog,
     Report,
+    sync_user_roles_from_legacy,
+    replace_user_roles_from_legacy,
 )
 from .serializers import (
     UserSerializer,
@@ -34,6 +38,13 @@ from .serializers import (
     ReferralSerializer,
     AuditLogSerializer,
     ReportSerializer,
+    StaffSerializer,
+)
+from .permissions import (
+    IsGradeHead,
+    IsSchoolClerk,
+    IsWellnessOffice,
+    IsSystemAdministrator,
 )
 import csv
 import io
@@ -116,28 +127,22 @@ def dashboard_stats(request):
 
 
 class UserListCreateView(generics.ListCreateAPIView):
+    # FR02, NFR16, NFR19: only a System Administrator may list, create,
+    # view or edit user accounts. Replaces the old per-method role check
+    # that only gated POST - GET is now restricted too.
     queryset = User.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSystemAdministrator]
 
     def get_serializer_class(self):
         if self.request.method == "POST":
             return UserCreateSerializer
         return UserSerializer
 
-    def create(self, request, *args, **kwargs):
-        # FR02, NFR16 stop-gap: only a System Administrator may create a
-        # user account. This only gates POST — GET (the list) is
-        # unchanged. The central permission layer will replace this
-        # check later.
-        if request.user.role != "System_Admin":
-            return Response(
-                {"error": "Only a System Administrator may create users."},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        return super().create(request, *args, **kwargs)
-
     def perform_create(self, serializer):
         user = serializer.save()
+        # FR02, NFR17, NFR18: keep UserRole in sync with the still-primary
+        # `role` field until phase (d) moves user creation off it entirely.
+        sync_user_roles_from_legacy(user)
         AuditLog.objects.create(
             user=self.request.user,
             action="User_Created",
@@ -150,7 +155,53 @@ class UserListCreateView(generics.ListCreateAPIView):
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSystemAdministrator]
+
+    def perform_update(self, serializer):
+        old_role = serializer.instance.role
+        old_grade = serializer.instance.assigned_grade
+        old_class = serializer.instance.assigned_class_group
+        user = serializer.save()
+        # FR02, NFR17, NFR18: if the legacy role (or its scope) changed,
+        # replace this user's UserRole set so it never goes stale - e.g.
+        # Educator -> School_Admin must remove the Register Teacher/Subject
+        # Teacher rows, not just add a School Clerk row alongside them.
+        if (
+            user.role != old_role
+            or user.assigned_grade != old_grade
+            or user.assigned_class_group != old_class
+        ):
+            replace_user_roles_from_legacy(user)
+
+
+class StaffListView(generics.ListAPIView):
+    # FR13: a narrow, PII-free staff list (id, name, role) for populating
+    # the referral "Assign To" dropdown - only the staff who can actually
+    # be assigned a case (Grade Head, Wellness Office), and only callable
+    # by the roles who do the assigning.
+    serializer_class = StaffSerializer
+    permission_classes = [IsGradeHead | IsWellnessOffice]
+
+    def get_queryset(self):
+        # Prefetches only the Grade Head/Wellness Office UserRole rows,
+        # with the role already joined in, as a plain list on each user
+        # (to_attr) - StaffSerializer.get_role reads that list instead of
+        # querying userrole_set per user.
+        assignable_roles = Prefetch(
+            "userrole_set",
+            queryset=UserRole.objects.filter(
+                role__name__in=[Role.GRADE_HEAD, Role.WELLNESS_OFFICE]
+            ).select_related("role"),
+            to_attr="assignable_user_roles",
+        )
+        return (
+            User.objects.filter(
+                is_active=True,
+                userrole__role__name__in=[Role.GRADE_HEAD, Role.WELLNESS_OFFICE],
+            )
+            .distinct()
+            .prefetch_related(assignable_roles)
+        )
 
 
 class LearnerListCreateView(generics.ListCreateAPIView):
@@ -402,8 +453,9 @@ class ReferralDetailView(generics.RetrieveUpdateDestroyAPIView):
 
 
 class AuditLogListView(generics.ListAPIView):
+    # FR03: System Administrator only.
     serializer_class = AuditLogSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsSystemAdministrator]
 
     def get_queryset(self):
         return AuditLog.objects.all().order_by("-timestamp")
@@ -418,8 +470,9 @@ class ReportListCreateView(generics.ListCreateAPIView):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsSchoolClerk])
 def upload_csv(request):
+    # FR04: School Clerk only.
     file = request.FILES.get("file")
     upload_type = request.data.get("type", "attendance")
 

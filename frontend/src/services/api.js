@@ -157,6 +157,7 @@ export const uploadCSV = (file, type) => {
 
 // ─── USERS ───────────────────────────────────────────────
 export const getUsers = () => api.get("/users/");
+export const getStaff = () => api.get("/staff/");
 export const createUser = (data) => api.post("/users/", data);
 export const updateUser = (id, data) => api.patch(`/users/${id}/`, data);
 

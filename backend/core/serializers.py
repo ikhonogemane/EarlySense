@@ -1,13 +1,21 @@
 from rest_framework import serializers
 from .models import (
-    User, Learner, AttendanceRecord, MarkRecord,
+    User, Role, Learner, AttendanceRecord, MarkRecord,
     Incident, RiskScore, Alert, Referral, AuditLog, Report
 )
 
 class UserSerializer(serializers.ModelSerializer):
+    # FR02, NFR17, NFR18: every role this user holds via UserRole,
+    # alongside the old single `role` field - kept side by side until the
+    # frontend switches over to `roles` in phase (d).
+    roles = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ['id', 'username', 'email', 'full_name', 'role', 'is_active', 'created_at', 'assigned_grade', 'assigned_class_group']
+        fields = ['id', 'username', 'email', 'full_name', 'role', 'roles', 'is_active', 'created_at', 'assigned_grade', 'assigned_class_group']
+
+    def get_roles(self, obj):
+        return list(obj.userrole_set.values_list('role__name', flat=True).distinct())
 
     def get_fields(self):
         # FR02, NFR16: only a System Administrator may change another
@@ -120,3 +128,24 @@ class ReportSerializer(serializers.ModelSerializer):
     class Meta:
         model = Report
         fields = '__all__'
+
+class StaffSerializer(serializers.ModelSerializer):
+    # Narrow, PII-free shape for populating an "Assign To" dropdown (FR13):
+    # id, name and role only - no email or anything else.
+    role = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = ['id', 'full_name', 'role']
+
+    def get_role(self, obj):
+        # Reads the view's prefetched assignable_user_roles (to_attr) -
+        # never queries per user. Falls back to a live filter only if a
+        # caller builds this serializer without that prefetch.
+        user_roles = getattr(obj, 'assignable_user_roles', None)
+        if user_roles is None:
+            user_roles = obj.userrole_set.filter(
+                role__name__in=[Role.GRADE_HEAD, Role.WELLNESS_OFFICE]
+            ).select_related('role')
+        names = {ur.role.name for ur in user_roles}
+        return ', '.join(sorted(names))

@@ -7,10 +7,9 @@ import {
   getMarks,
   getIncidents,
   createReferral,
-  getUsers,
+  getStaff,
 } from "../services/api";
 import { MapPin, Phone, ClipboardPlus } from "lucide-react";
-import { getCurrentUser } from '../services/api';
 
 export default function LearnerProfile() {
   const { id } = useParams();
@@ -39,19 +38,12 @@ export default function LearnerProfile() {
 
   const fetchAll = async () => {
     try {
-      const currentUser = getCurrentUser();
-      const isLST = currentUser?.role === "LST_Member";
-
       const requests = [
         getLearner(id),
         getAttendance(id),
         getMarks(id),
         getIncidents(id),
       ];
-
-      if (!isLST) {
-        requests.push(getUsers());
-      }
 
       const results = await Promise.all(requests);
 
@@ -60,12 +52,13 @@ export default function LearnerProfile() {
       setMarks(results[2].data);
       setIncidents(results[3].data);
 
-      if (!isLST && results[4]) {
-        setUsers(
-          results[4].data.filter(
-            (u) => u.role === "LST_Member" || u.role === "School_Admin",
-          ),
-        );
+      // FR13: only Grade Head / Wellness Office may list assignable staff.
+      // A 403 here leaves the dropdown empty instead of failing the page.
+      try {
+        const staffRes = await getStaff();
+        setUsers(staffRes.data);
+      } catch (err) {
+        if (err.response?.status === 403) { setUsers([]); } else { throw err; }
       }
     } catch (err) {
       console.error(err);

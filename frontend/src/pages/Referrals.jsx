@@ -5,7 +5,7 @@ import {
   createReferral,
   updateReferral,
   getLearners,
-  getUsers,
+  getStaff,
 } from "../services/api";
 import { PlusCircle, Play, CheckCircle, ClipboardList } from "lucide-react";
 
@@ -32,18 +32,20 @@ export default function Referrals() {
 
   const fetchData = async () => {
     try {
-      const [refRes, learnerRes, userRes] = await Promise.all([
+      const [refRes, learnerRes] = await Promise.all([
         getReferrals(),
         getLearners(),
-        getUsers(),
       ]);
       setReferrals(refRes.data);
       setLearners(learnerRes.data);
-      setUsers(
-        userRes.data.filter(
-          (u) => u.role === "LST_Member" || u.role === "School_Admin",
-        ),
-      );
+      // FR13: only Grade Head / Wellness Office may list assignable staff.
+      // A 403 here leaves the dropdown empty instead of failing the page.
+      try {
+        const staffRes = await getStaff();
+        setUsers(staffRes.data);
+      } catch (err) {
+        if (err.response?.status === 403) { setUsers([]); } else { throw err; }
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -298,7 +300,7 @@ export default function Referrals() {
                 <option value="">Select LST member...</option>
                 {users.map((u) => (
                   <option key={u.id} value={u.id}>
-                    {u.full_name} ({u.role.replace("_", " ")})
+                    {u.full_name} ({u.role})
                   </option>
                 ))}
               </select>

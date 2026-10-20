@@ -1,12 +1,31 @@
 import importlib
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from django.apps import apps
+from django.contrib.auth.models import AnonymousUser
 from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework import status
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.test import APITestCase
 
-from .models import Role, User, UserRole
+from . import urls as core_urls
+from .models import (
+    Role,
+    User,
+    UserRole,
+    sync_user_roles_from_legacy,
+    replace_user_roles_from_legacy,
+)
+from .permissions import (
+    IsRegisterTeacher,
+    IsSubjectTeacher,
+    IsGradeHead,
+    IsSchoolClerk,
+    IsWellnessOffice,
+    IsSystemAdministrator,
+)
 
 _map_migration = importlib.import_module(
     'core.migrations.0007_map_existing_users_to_roles'
@@ -27,6 +46,7 @@ class UserRoleEscalationTests(APITestCase):
             full_name='Test Educator',
             role='Educator',
         )
+        sync_user_roles_from_legacy(self.educator)
         self.admin = User.objects.create_user(
             username='admin1',
             email='admin1@example.com',
@@ -34,6 +54,7 @@ class UserRoleEscalationTests(APITestCase):
             full_name='Test Admin',
             role='System_Admin',
         )
+        sync_user_roles_from_legacy(self.admin)
 
     def test_educator_cannot_change_own_role(self):
         self.client.force_authenticate(user=self.educator)
@@ -42,7 +63,7 @@ class UserRoleEscalationTests(APITestCase):
             {'role': 'System_Admin'},
             format='json',
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.educator.refresh_from_db()
         self.assertEqual(self.educator.role, 'Educator')
 
@@ -53,7 +74,7 @@ class UserRoleEscalationTests(APITestCase):
             {'is_active': False},
             format='json',
         )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.educator.refresh_from_db()
         self.assertTrue(self.educator.is_active)
 
@@ -83,6 +104,7 @@ class UserCreationPermissionTests(APITestCase):
             full_name='Another Educator',
             role='Educator',
         )
+        sync_user_roles_from_legacy(self.educator)
         self.admin = User.objects.create_user(
             username='admin2',
             email='admin2@example.com',
@@ -90,6 +112,7 @@ class UserCreationPermissionTests(APITestCase):
             full_name='Another Admin',
             role='System_Admin',
         )
+        sync_user_roles_from_legacy(self.admin)
 
     def test_educator_cannot_create_system_admin_user(self):
         self.client.force_authenticate(user=self.educator)
@@ -124,6 +147,11 @@ class UserCreationPermissionTests(APITestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertTrue(User.objects.filter(username='newteacher').exists())
+        new_user = User.objects.get(username='newteacher')
+        roles = set(
+            UserRole.objects.filter(user=new_user).values_list('role__name', flat=True)
+        )
+        self.assertEqual(roles, {Role.REGISTER_TEACHER, Role.SUBJECT_TEACHER})
 
 
 class RoleAndUserRoleModelTests(TestCase):
@@ -274,4 +302,547 @@ class CreateSuperuserRoleSyncTests(TestCase):
             UserRole.objects.filter(
                 user=admin, role__name=Role.SYSTEM_ADMINISTRATOR
             ).exists()
+        )
+
+
+ALL_PERMISSION_CLASSES = {
+    Role.REGISTER_TEACHER: IsRegisterTeacher,
+    Role.SUBJECT_TEACHER: IsSubjectTeacher,
+    Role.GRADE_HEAD: IsGradeHead,
+    Role.SCHOOL_CLERK: IsSchoolClerk,
+    Role.WELLNESS_OFFICE: IsWellnessOffice,
+    Role.SYSTEM_ADMINISTRATOR: IsSystemAdministrator,
+}
+
+
+def _req(user):
+    return SimpleNamespace(user=user)
+
+
+def _slug(role_name):
+    return role_name.replace(' ', '_').lower()
+
+
+class RolePermissionClassTests(TestCase):
+    """
+    NFR16, NFR17, NFR18 - the six permission classes in permissions.py,
+    tested directly against has_permission() rather than through an
+    endpoint, so these are pinned to the permission layer itself.
+    """
+
+    def setUp(self):
+        self.users = {}
+        for role_name in ALL_PERMISSION_CLASSES:
+            u = User.objects.create_user(
+                username=f'perm_{_slug(role_name)}',
+                email=f'perm_{_slug(role_name)}@example.com',
+                password='testpass123',
+                full_name=role_name,
+                role='Educator',
+            )
+            UserRole.objects.create(user=u, role=Role.objects.get(name=role_name))
+            self.users[role_name] = u
+
+        self.no_role_user = User.objects.create_user(
+            username='perm_norole', email='perm_norole@example.com',
+            password='testpass123', full_name='No Role', role='Educator',
+        )
+
+        self.inactive_user = User.objects.create_user(
+            username='perm_inactive', email='perm_inactive@example.com',
+            password='testpass123', full_name='Inactive', role='Educator',
+            is_active=False,
+        )
+        UserRole.objects.create(
+            user=self.inactive_user,
+            role=Role.objects.get(name=Role.SYSTEM_ADMINISTRATOR),
+        )
+
+        self.two_role_user = User.objects.create_user(
+            username='perm_tworoles', email='perm_tworoles@example.com',
+            password='testpass123', full_name='Two Roles', role='Educator',
+        )
+        UserRole.objects.create(
+            user=self.two_role_user, role=Role.objects.get(name=Role.REGISTER_TEACHER)
+        )
+        UserRole.objects.create(
+            user=self.two_role_user, role=Role.objects.get(name=Role.GRADE_HEAD)
+        )
+
+    def test_a_user_passes_only_the_class_for_the_role_they_hold(self):
+        for held_role, user in self.users.items():
+            for other_role, permission_cls in ALL_PERMISSION_CLASSES.items():
+                result = permission_cls().has_permission(_req(user), None)
+                if other_role == held_role:
+                    self.assertTrue(
+                        result,
+                        f'{held_role} should pass {permission_cls.__name__}',
+                    )
+                else:
+                    self.assertFalse(
+                        result,
+                        f'{held_role} should NOT pass {permission_cls.__name__} '
+                        f'(only holds {held_role})',
+                    )
+
+    def test_user_with_no_roles_is_denied_every_class(self):
+        for permission_cls in ALL_PERMISSION_CLASSES.values():
+            self.assertFalse(
+                permission_cls().has_permission(_req(self.no_role_user), None)
+            )
+
+    def test_anonymous_user_is_denied_every_class(self):
+        anon = AnonymousUser()
+        for permission_cls in ALL_PERMISSION_CLASSES.values():
+            self.assertFalse(permission_cls().has_permission(_req(anon), None))
+
+    def test_inactive_user_is_denied_even_with_a_matching_role(self):
+        # inactive_user holds System Administrator but is deactivated.
+        self.assertFalse(
+            IsSystemAdministrator().has_permission(_req(self.inactive_user), None)
+        )
+
+    def test_user_with_two_roles_passes_both_classes(self):
+        self.assertTrue(
+            IsRegisterTeacher().has_permission(_req(self.two_role_user), None)
+        )
+        self.assertTrue(
+            IsGradeHead().has_permission(_req(self.two_role_user), None)
+        )
+        self.assertFalse(
+            IsSchoolClerk().has_permission(_req(self.two_role_user), None)
+        )
+
+
+class RoleGatedEndpointTests(APITestCase):
+    """
+    FR02, FR03, FR04, NFR16, NFR19 - /users/, /users/<pk>/ and
+    /audit-log/ are System Administrator only; /upload-csv/ is School
+    Clerk only.
+    """
+
+    def setUp(self):
+        self.users = {}
+        for role_name in ALL_PERMISSION_CLASSES:
+            u = User.objects.create_user(
+                username=f'ep_{_slug(role_name)}',
+                email=f'ep_{_slug(role_name)}@example.com',
+                password='testpass123',
+                full_name=role_name,
+                role='Educator',
+            )
+            UserRole.objects.create(user=u, role=Role.objects.get(name=role_name))
+            self.users[role_name] = u
+
+    def test_users_list_get_is_system_administrator_only(self):
+        for role_name, user in self.users.items():
+            self.client.force_authenticate(user=user)
+            response = self.client.get('/api/users/')
+            expected = (
+                status.HTTP_200_OK
+                if role_name == Role.SYSTEM_ADMINISTRATOR
+                else status.HTTP_403_FORBIDDEN
+            )
+            self.assertEqual(response.status_code, expected, role_name)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.get('/api/users/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_user_detail_get_and_patch_is_system_administrator_only(self):
+        target = self.users[Role.REGISTER_TEACHER]
+        for role_name, user in self.users.items():
+            self.client.force_authenticate(user=user)
+            get_response = self.client.get(f'/api/users/{target.id}/')
+            patch_response = self.client.patch(
+                f'/api/users/{target.id}/', {'full_name': 'Renamed'}, format='json'
+            )
+            if role_name == Role.SYSTEM_ADMINISTRATOR:
+                self.assertEqual(get_response.status_code, status.HTTP_200_OK)
+                self.assertEqual(patch_response.status_code, status.HTTP_200_OK)
+            else:
+                self.assertEqual(
+                    get_response.status_code, status.HTTP_403_FORBIDDEN, role_name
+                )
+                self.assertEqual(
+                    patch_response.status_code, status.HTTP_403_FORBIDDEN, role_name
+                )
+
+        self.client.force_authenticate(user=None)
+        response = self.client.get(f'/api/users/{target.id}/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_audit_log_get_is_system_administrator_only(self):
+        for role_name, user in self.users.items():
+            self.client.force_authenticate(user=user)
+            response = self.client.get('/api/audit-log/')
+            expected = (
+                status.HTTP_200_OK
+                if role_name == Role.SYSTEM_ADMINISTRATOR
+                else status.HTTP_403_FORBIDDEN
+            )
+            self.assertEqual(response.status_code, expected, role_name)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.get('/api/audit-log/')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_upload_csv_is_school_clerk_only(self):
+        for role_name, user in self.users.items():
+            self.client.force_authenticate(user=user)
+            response = self.client.post('/api/upload-csv/', {}, format='multipart')
+            if role_name == Role.SCHOOL_CLERK:
+                # No file was posted, so a School Clerk gets past the
+                # permission check and hits the view's own 400 - which is
+                # exactly what proves permission was granted.
+                self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+            else:
+                self.assertEqual(
+                    response.status_code, status.HTTP_403_FORBIDDEN, role_name
+                )
+
+
+class StaffListEndpointTests(APITestCase):
+    """
+    FR13 - the narrow /staff/ endpoint for the referral "Assign To"
+    dropdown: Grade Head/Wellness Office callers only, active
+    Grade-Head-or-Wellness-Office staff only, id/full_name/role only.
+    """
+
+    def setUp(self):
+        self.grade_head_role = Role.objects.get(name=Role.GRADE_HEAD)
+        self.wellness_role = Role.objects.get(name=Role.WELLNESS_OFFICE)
+
+        self.caller_grade_head = User.objects.create_user(
+            username='staff_caller_gh', email='staff_caller_gh@example.com',
+            password='testpass123', full_name='Caller GH', role='Educator',
+        )
+        UserRole.objects.create(user=self.caller_grade_head, role=self.grade_head_role)
+
+        self.caller_wellness = User.objects.create_user(
+            username='staff_caller_wo', email='staff_caller_wo@example.com',
+            password='testpass123', full_name='Caller WO', role='Educator',
+        )
+        UserRole.objects.create(user=self.caller_wellness, role=self.wellness_role)
+
+        self.staff_grade_head_only = User.objects.create_user(
+            username='staff_gh_only', email='staff_gh_only@example.com',
+            password='testpass123', full_name='Staff GH', role='Educator',
+        )
+        UserRole.objects.create(
+            user=self.staff_grade_head_only, role=self.grade_head_role
+        )
+
+        self.staff_both = User.objects.create_user(
+            username='staff_both', email='staff_both@example.com',
+            password='testpass123', full_name='Staff Both', role='Educator',
+        )
+        UserRole.objects.create(user=self.staff_both, role=self.grade_head_role)
+        UserRole.objects.create(user=self.staff_both, role=self.wellness_role)
+
+        self.staff_inactive = User.objects.create_user(
+            username='staff_inactive', email='staff_inactive@example.com',
+            password='testpass123', full_name='Staff Inactive', role='Educator',
+            is_active=False,
+        )
+        UserRole.objects.create(user=self.staff_inactive, role=self.wellness_role)
+
+        self.not_staff = User.objects.create_user(
+            username='staff_not_staff', email='staff_not_staff@example.com',
+            password='testpass123', full_name='Not Staff', role='Educator',
+        )
+        UserRole.objects.create(
+            user=self.not_staff, role=Role.objects.get(name=Role.REGISTER_TEACHER)
+        )
+
+        self.other_four = []
+        for role_name in [
+            Role.REGISTER_TEACHER,
+            Role.SUBJECT_TEACHER,
+            Role.SCHOOL_CLERK,
+            Role.SYSTEM_ADMINISTRATOR,
+        ]:
+            u = User.objects.create_user(
+                username=f'staff_denied_{_slug(role_name)}',
+                email=f'staff_denied_{_slug(role_name)}@example.com',
+                password='testpass123', full_name=role_name, role='Educator',
+            )
+            UserRole.objects.create(user=u, role=Role.objects.get(name=role_name))
+            self.other_four.append(u)
+
+    def test_grade_head_and_wellness_office_get_200(self):
+        for caller in [self.caller_grade_head, self.caller_wellness]:
+            self.client.force_authenticate(user=caller)
+            response = self.client.get('/api/staff/')
+            self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_other_four_roles_get_403(self):
+        for user in self.other_four:
+            self.client.force_authenticate(user=user)
+            response = self.client.get('/api/staff/')
+            self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_response_keys_are_exactly_id_full_name_role(self):
+        self.client.force_authenticate(user=self.caller_grade_head)
+        response = self.client.get('/api/staff/')
+        self.assertGreater(len(response.data), 0)
+        for row in response.data:
+            self.assertEqual(set(row.keys()), {'id', 'full_name', 'role'})
+
+    def test_only_active_grade_head_or_wellness_users_are_listed(self):
+        self.client.force_authenticate(user=self.caller_grade_head)
+        response = self.client.get('/api/staff/')
+        ids = {row['id'] for row in response.data}
+        self.assertIn(self.staff_grade_head_only.id, ids)
+        self.assertIn(self.staff_both.id, ids)
+        self.assertIn(self.caller_grade_head.id, ids)
+        self.assertIn(self.caller_wellness.id, ids)
+        self.assertNotIn(self.staff_inactive.id, ids)
+        self.assertNotIn(self.not_staff.id, ids)
+        for u in self.other_four:
+            self.assertNotIn(u.id, ids)
+
+    def test_user_holding_both_roles_appears_once(self):
+        self.client.force_authenticate(user=self.caller_grade_head)
+        response = self.client.get('/api/staff/')
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids.count(self.staff_both.id), 1)
+        both_row = next(row for row in response.data if row['id'] == self.staff_both.id)
+        self.assertEqual(both_row['role'], 'Grade Head, Wellness Office')
+
+
+class UserRoleSyncOnWriteTests(APITestCase):
+    """
+    FR02, NFR17, NFR18 - until phase (d), POST/PATCH on /users/ keeps
+    UserRole in sync with the still-primary legacy role field.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='sync_admin', email='sync_admin@example.com',
+            password='testpass123', full_name='Sync Admin', role='System_Admin',
+        )
+        UserRole.objects.create(
+            user=self.admin, role=Role.objects.get(name=Role.SYSTEM_ADMINISTRATOR)
+        )
+        self.client.force_authenticate(user=self.admin)
+
+    def test_create_educator_creates_register_and_subject_teacher_rows(self):
+        response = self.client.post(
+            '/api/users/',
+            {
+                'username': 'sync_new_educator',
+                'email': 'sync_new_educator@example.com',
+                'full_name': 'New Educator',
+                'role': 'Educator',
+                'password': 'testpass123',
+                'assigned_grade': 9,
+                'assigned_class_group': '9B',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        new_user = User.objects.get(username='sync_new_educator')
+        roles = set(
+            UserRole.objects.filter(user=new_user).values_list(
+                'role__name', 'grade_scope', 'class_scope'
+            )
+        )
+        self.assertEqual(
+            roles,
+            {('Register Teacher', 9, '9B'), ('Subject Teacher', 9, '9B')},
+        )
+
+    def test_patch_role_from_educator_to_school_admin_replaces_roles(self):
+        target = User.objects.create_user(
+            username='sync_changing_user', email='sync_changing_user@example.com',
+            password='testpass123', full_name='Changing User',
+            role='Educator', assigned_grade=8, assigned_class_group='8A',
+        )
+        sync_user_roles_from_legacy(target)
+        self.assertEqual(UserRole.objects.filter(user=target).count(), 2)
+
+        response = self.client.patch(
+            f'/api/users/{target.id}/', {'role': 'School_Admin'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        roles = set(
+            UserRole.objects.filter(user=target).values_list('role__name', flat=True)
+        )
+        self.assertEqual(roles, {'School Clerk'})
+
+    def test_patch_unrelated_field_leaves_roles_unchanged(self):
+        target = User.objects.create_user(
+            username='sync_unrelated_patch', email='sync_unrelated_patch@example.com',
+            password='testpass123', full_name='Unrelated',
+            role='Educator', assigned_grade=8, assigned_class_group='8A',
+        )
+        sync_user_roles_from_legacy(target)
+        before = set(
+            UserRole.objects.filter(user=target).values_list('id', flat=True)
+        )
+
+        response = self.client.patch(
+            f'/api/users/{target.id}/', {'full_name': 'Unrelated Renamed'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        after = set(
+            UserRole.objects.filter(user=target).values_list('id', flat=True)
+        )
+        # Same row IDs, not just the same count - proves nothing was
+        # deleted and recreated when role/scope didn't change.
+        self.assertEqual(before, after)
+
+
+class ReplaceUserRolesAtomicityTests(TestCase):
+    """
+    FR02, NFR17, NFR18 - replace_user_roles_from_legacy's delete-then-
+    recreate must be atomic: if the recreate half fails, the delete half
+    must roll back too, so a user is never left with zero roles.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username='atomic_user', email='atomic_user@example.com',
+            password='testpass123', full_name='Atomic User',
+            role='Educator', assigned_grade=8, assigned_class_group='8A',
+        )
+        sync_user_roles_from_legacy(self.user)
+        self.original_role_ids = set(
+            UserRole.objects.filter(user=self.user).values_list('id', flat=True)
+        )
+        self.assertEqual(len(self.original_role_ids), 2)
+
+    def test_atomic_wrapper_rolls_back_delete_if_sync_raises(self):
+        with patch(
+            'core.models.sync_user_roles_from_legacy',
+            side_effect=Exception('boom'),
+        ):
+            with self.assertRaises(Exception):
+                replace_user_roles_from_legacy(self.user)
+
+        remaining_ids = set(
+            UserRole.objects.filter(user=self.user).values_list('id', flat=True)
+        )
+        self.assertEqual(remaining_ids, self.original_role_ids)
+
+
+class CurrentUserRolesTests(APITestCase):
+    """
+    FR02, NFR17, NFR18 - /api/auth/me/ returns every role the user holds
+    via UserRole as `roles`, alongside the still-primary legacy `role`
+    string, until the frontend switches over in phase (d).
+    """
+
+    def test_me_returns_roles_list_and_legacy_role(self):
+        user = User.objects.create_user(
+            username='me_two_roles', email='me_two_roles@example.com',
+            password='testpass123', full_name='Two Roles', role='Educator',
+        )
+        UserRole.objects.create(
+            user=user, role=Role.objects.get(name=Role.REGISTER_TEACHER),
+            grade_scope=8, class_scope='8A',
+        )
+        UserRole.objects.create(
+            user=user, role=Role.objects.get(name=Role.GRADE_HEAD),
+            grade_scope=8,
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.get('/api/auth/me/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertCountEqual(
+            response.data['roles'], [Role.REGISTER_TEACHER, Role.GRADE_HEAD]
+        )
+        self.assertEqual(response.data['role'], 'Educator')
+
+
+# Open to all six roles by design, forever - not migrated later, never
+# expected to gain a role-specific permission class.
+OPEN_BY_DESIGN = {'login', 'token_refresh', 'current-user'}
+
+# Not yet migrated to a role-specific permission class - these belong to
+# phase (c2)/(c3), not (c1). This list must only ever shrink: remove an
+# entry the moment that endpoint's permission_classes stops being bare
+# IsAuthenticated/AllowAny/empty. See test_allow_list_is_not_stale below,
+# which fails if an entry here has already been migrated and should have
+# been removed.
+NOT_YET_MIGRATED = {
+    'dashboard',
+    'learner-list',
+    'learner-detail',
+    'attendance-list',
+    'mark-list',
+    'incident-list',
+    'incident-detail',
+    'risk-score-list',
+    'alert-list',
+    'alert-read',
+    'alert-read-all',
+    'referral-list',
+    'referral-detail',
+    'generate-report',
+    'report-list',
+    'mark-attendance',
+    'check-performance',
+    'analyse-script',
+    'educator-class-trends',
+    'generate-script-pdf',
+}
+
+
+def _permission_classes_for(callback):
+    view_class = getattr(callback, 'view_class', None) or getattr(callback, 'cls', None)
+    return list(getattr(view_class, 'permission_classes', []))
+
+
+def _has_no_role_specific_permission(classes):
+    # Empty permission_classes is the least-protected state of all (DRF
+    # treats no classes as nothing to deny on), so it counts as "no role
+    # permission" too, not as something to silently pass.
+    if not classes:
+        return True
+    return all(cls in (IsAuthenticated, AllowAny) for cls in classes)
+
+
+class PermissionAuditTests(TestCase):
+    """
+    NFR16 - one central permission layer, deny by default, used by every
+    endpoint. Scoped to backend/core/urls.py (the project's actual API
+    surface) - Django's own /admin/ site isn't part of it and uses its own,
+    separate permission mechanism (ModelAdmin/is_staff), not DRF
+    permission_classes, so it can't be walked the same way.
+    """
+
+    def test_every_migrated_endpoint_has_an_explicit_role_permission(self):
+        unprotected = []
+        for pattern in core_urls.urlpatterns:
+            name = pattern.name
+            if name in OPEN_BY_DESIGN or name in NOT_YET_MIGRATED:
+                continue
+            classes = _permission_classes_for(pattern.callback)
+            if _has_no_role_specific_permission(classes):
+                unprotected.append(name)
+        self.assertEqual(
+            unprotected,
+            [],
+            f'These endpoints have no role-specific permission class: {unprotected}',
+        )
+
+    def test_allow_list_is_not_stale(self):
+        wrongly_listed = []
+        for pattern in core_urls.urlpatterns:
+            name = pattern.name
+            if name not in NOT_YET_MIGRATED:
+                continue
+            classes = _permission_classes_for(pattern.callback)
+            if not _has_no_role_specific_permission(classes):
+                wrongly_listed.append(name)
+        self.assertEqual(
+            wrongly_listed,
+            [],
+            'These endpoints are listed as not-yet-migrated but already '
+            f'have a role-specific permission class - remove them from '
+            f'NOT_YET_MIGRATED: {wrongly_listed}',
         )
