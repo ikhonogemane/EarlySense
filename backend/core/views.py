@@ -1,10 +1,11 @@
 from re import search
-from django.db.models import Avg, Count, F, Prefetch
+from django.db.models import Avg, Count, F, Prefetch, Q
 import anthropic
 from django.shortcuts import render
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny, SAFE_METHODS
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from django.db.models import Avg, Count
 from django.db import transaction
@@ -52,6 +53,13 @@ from .permissions import (
     PROFILE_ROLES,
     CAPTURE_ROLES,
     ROSTER_ROLES,
+    ALERT_ROLES,
+    DASHBOARD_ROLES,
+    MANAGE_REFERRAL_ROLES,
+    REFERRAL_READ_ROLES,
+    REPORT_ROLES,
+    SCRIPT_ROLES,
+    learner_scope_q,
     scope_queryset,
 )
 import csv
@@ -97,8 +105,10 @@ def current_user(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsGradeHead | IsSchoolClerk])
 def dashboard_stats(request):
+    # FR09: Grade Head sees own grade, School Clerk the whole school. Counts
+    # only, all scoped the same way, including unread alerts.
     from django.db.models import OuterRef, Subquery
 
     # Each learner accumulates a NEW RiskScore row every time the ML engine
@@ -114,15 +124,20 @@ def dashboard_stats(request):
         .values("risk_level")[:1]
     )
 
-    learners = Learner.objects.filter(is_active=True).annotate(
-        latest_risk_level=Subquery(latest_risk_subquery)
-    )
+    learners = scope_queryset(
+        Learner.objects.filter(is_active=True), request.user, DASHBOARD_ROLES
+    ).annotate(latest_risk_level=Subquery(latest_risk_subquery))
 
     total = learners.count()
     high = learners.filter(latest_risk_level="High").count()
     medium = learners.filter(latest_risk_level="Medium").count()
     low = learners.filter(latest_risk_level="Low").count()
-    unread_alerts = Alert.objects.filter(is_read=False).count()
+    unread_alerts = scope_queryset(
+        Alert.objects.filter(is_read=False),
+        request.user,
+        DASHBOARD_ROLES,
+        prefix="learner__",
+    ).count()
     return Response(
         {
             "total_learners": total,
@@ -361,15 +376,16 @@ class RiskScoreListView(generics.ListAPIView):
         return queryset
 
 
-def _learner_ids_outside_capture_scope(user, learner_ids):
+def _learner_ids_outside_capture_scope(user, learner_ids, roles=CAPTURE_ROLES):
     """
-    FR05, FR06, NFR17 - returns the IDs in `learner_ids` that don't exist,
-    aren't active, or aren't in a class the user registers or teaches.
-    Empty list means every ID may be captured for.
+    FR05, FR06, FR12, NFR17 - returns the IDs in `learner_ids` that don't
+    exist, aren't active, or aren't in the user's scope through `roles`
+    (by default the classes the user registers or teaches). Empty list
+    means every ID may be captured for.
     """
     allowed = set(
         scope_queryset(
-            Learner.objects.filter(is_active=True), user, CAPTURE_ROLES
+            Learner.objects.filter(is_active=True), user, roles
         ).values_list("id", flat=True)
     )
     bad = []
@@ -385,22 +401,20 @@ def _learner_ids_outside_capture_scope(user, learner_ids):
 
 
 class AlertListView(generics.ListAPIView):
+    # FR10, NFR17: Register / Subject Teacher see alerts for learners in
+    # own class(es), Grade Head for own grade (see ALERT_ROLES).
     serializer_class = AlertSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": ALERT_ROLES}
 
     def get_queryset(self):
-        user = self.request.user
-        queryset = Alert.objects.all().order_by("-created_at")
+        return _scoped_alerts(self.request.user).order_by("-created_at")
 
-        # Educators only see alerts for their assigned class
-        if user.role == "Educator":
-            if user.assigned_grade and user.assigned_class_group:
-                queryset = queryset.filter(
-                    learner__grade=user.assigned_grade,
-                    learner__class_group=user.assigned_class_group,
-                )
 
-        return queryset
+def _scoped_alerts(user):
+    # The alerts `user` may see and mark read - one scope for list, read
+    # and read-all, so read-all never touches an alert outside it.
+    return scope_queryset(Alert.objects.all(), user, ALERT_ROLES, prefix="learner__")
 
 
 @api_view(["GET"])
@@ -493,10 +507,13 @@ def educator_class_trends(request):
 
 
 @api_view(["PATCH"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsRegisterTeacher | IsSubjectTeacher | IsGradeHead])
 def mark_alert_read(request, pk):
+    # FR10, NFR17: an alert outside the user's scope is a 404. Known gap:
+    # is_read is one flag on the Alert, so it reads as read for every
+    # recipient, not just the caller.
     try:
-        alert = Alert.objects.get(pk=pk)
+        alert = _scoped_alerts(request.user).get(pk=pk)
         alert.is_read = True
         alert.save()
         return Response({"message": "Alert marked as read"})
@@ -505,28 +522,80 @@ def mark_alert_read(request, pk):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsRegisterTeacher | IsSubjectTeacher | IsGradeHead])
 def mark_all_alerts_read(request):
-    Alert.objects.filter(is_read=False).update(is_read=True)
+    # FR10, NFR17: only alerts inside the caller's scope.
+    _scoped_alerts(request.user).filter(is_read=False).update(is_read=True)
     return Response({"message": "All alerts marked as read"})
 
 
+def _referrals_visible_to(user):
+    """
+    FR12, FR13, NFR17 - Wellness Office: every referral. Grade Head:
+    referrals for learners in own grade. Register Teacher: only the
+    referrals they made. Combined roles get the union.
+    """
+    q = learner_scope_q(user, MANAGE_REFERRAL_ROLES, prefix="learner__")
+    if q is not None and not q:
+        # An empty Q() means whole school. Checked before OR-ing, because
+        # Q() | Q(x) collapses to Q(x) and would narrow it.
+        return Referral.objects.all()
+    if user.userrole_set.filter(role__name=Role.REGISTER_TEACHER).exists():
+        own = Q(referred_by=user)
+        q = own if q is None else q | own
+    if q is None:
+        return Referral.objects.none()
+    return Referral.objects.filter(q)
+
+
+def _referrals_manageable_by(user):
+    # FR13: Grade Head (own grade) and Wellness Office (all) only.
+    return scope_queryset(
+        Referral.objects.all(), user, MANAGE_REFERRAL_ROLES, prefix="learner__"
+    )
+
+
 class ReferralListCreateView(generics.ListCreateAPIView):
+    # FR12: the Register Teacher refers a learner in own class; the
+    # referral starts Open and unassigned. FR13: see _referrals_visible_to.
     serializer_class = ReferralSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": REFERRAL_READ_ROLES, "POST": (Role.REGISTER_TEACHER,)}
 
     def get_queryset(self):
-        queryset = Referral.objects.all().order_by("-created_at")
-        user = self.request.user
-        if user.role == "LST_Member":
-            queryset = queryset.filter(assigned_to=user)
+        queryset = _referrals_visible_to(self.request.user).order_by("-created_at")
         status_param = self.request.query_params.get("status")
         if status_param:
             queryset = queryset.filter(status=status_param)
         return queryset
 
+    def create(self, request, *args, **kwargs):
+        learner_id = request.data.get("learner")
+        if learner_id not in (None, ""):
+            bad_ids = _learner_ids_outside_capture_scope(
+                request.user, [learner_id], roles=(Role.REGISTER_TEACHER,)
+            )
+            if bad_ids:
+                return Response(
+                    {
+                        "error": "Learner is not in your class or does not exist.",
+                        "invalid_learner_ids": bad_ids,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        with transaction.atomic():
+            return super().create(request, *args, **kwargs)
+
     def perform_create(self, serializer):
-        referral = serializer.save(referred_by=self.request.user)
+        # The teacher does not choose the assignee or the status, and
+        # cannot pre-resolve a case: any client value for these is ignored.
+        referral = serializer.save(
+            referred_by=self.request.user,
+            status="Open",
+            assigned_to=None,
+            resolution_notes=None,
+            resolved_at=None,
+        )
         AuditLog.objects.create(
             user=self.request.user,
             action="Referral_Created",
@@ -536,10 +605,36 @@ class ReferralListCreateView(generics.ListCreateAPIView):
         )
 
 
-class ReferralDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Referral.objects.all()
+class ReferralDetailView(generics.RetrieveUpdateAPIView):
+    # FR13: read within the same scope as the list; only Grade Head (own
+    # grade) and Wellness Office update. No DELETE - a referral keeps its
+    # history (rule 7). Out of scope is a 404.
     serializer_class = ReferralSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {
+        "GET": REFERRAL_READ_ROLES,
+        "PUT": MANAGE_REFERRAL_ROLES,
+        "PATCH": MANAGE_REFERRAL_ROLES,
+    }
+
+    def get_queryset(self):
+        if self.request.method in SAFE_METHODS:
+            return _referrals_visible_to(self.request.user)
+        return _referrals_manageable_by(self.request.user)
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        assignee = serializer.validated_data.get("assigned_to", instance.assigned_to)
+        if assignee is not None and assignee != instance.assigned_to:
+            can_manage = assignee.is_active and assignee.userrole_set.filter(
+                role__name__in=MANAGE_REFERRAL_ROLES
+            ).exists()
+            if not can_manage:
+                raise ValidationError(
+                    {"assigned_to": "Must be an active Grade Head or Wellness Office user."}
+                )
+        # The learner and who raised the referral never change after creation.
+        serializer.save(learner=instance.learner, referred_by=instance.referred_by)
 
 
 class AuditLogListView(generics.ListAPIView):
@@ -551,12 +646,17 @@ class AuditLogListView(generics.ListAPIView):
         return AuditLog.objects.all().order_by("-timestamp")
 
 
-class ReportListCreateView(generics.ListCreateAPIView):
+class ReportListCreateView(generics.ListAPIView):
+    # FR17: each user lists only the reports they generated. Read only -
+    # reports are produced by /reports/generate/. See REPORT_ROLES.
     serializer_class = ReportSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": REPORT_ROLES}
 
     def get_queryset(self):
-        return Report.objects.all().order_by("-generated_at")
+        return Report.objects.filter(generated_by=self.request.user).order_by(
+            "-generated_at"
+        )
 
 
 @api_view(["POST"])
@@ -1070,8 +1170,12 @@ def generate_report(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsRegisterTeacher | IsGradeHead | IsSchoolClerk | IsWellnessOffice])
 def run_generate_report(request):
+    # FR17, NFR17, NFR19: each role reports on its own area only - Register
+    # Teacher own class, Grade Head own grade, School Clerk and Wellness
+    # Office the whole school. No report type exists yet for the Subject
+    # Teacher or System Administrator, so both are denied (REPORT_ROLES).
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -1086,7 +1190,9 @@ def run_generate_report(request):
     report_type = request.query_params.get("type", "at_risk")
     file_format = request.query_params.get("format", "pdf")
     grade_filter = request.query_params.get("grade", "")
-    learners = Learner.objects.filter(is_active=True)
+    learners = scope_queryset(
+        Learner.objects.filter(is_active=True), request.user, REPORT_ROLES
+    )
     if grade_filter:
         learners = learners.filter(grade=grade_filter)
     report_data = []
@@ -1367,8 +1473,11 @@ def extract_pdf_text(f):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsSubjectTeacher])
 def analyse_script(request):
+    # FR15, NFR17: Subject Teacher, for learners in own classes only. A
+    # learner outside scope is a 404, checked before any file is read or
+    # anything is sent to the AI service.
     from groq import APIError, Groq
     from google.genai import errors as genai_errors
     from dotenv import load_dotenv
@@ -1389,8 +1498,10 @@ def analyse_script(request):
         )
 
     try:
-        learner = Learner.objects.get(id=learner_id)
-    except Learner.DoesNotExist:
+        learner = scope_queryset(
+            Learner.objects.all(), request.user, SCRIPT_ROLES
+        ).get(id=learner_id)
+    except (Learner.DoesNotExist, ValueError):
         return Response({"error": "Learner not found"}, status=404)
 
     qpaper_text = extract_pdf_text(qpaper_file)
@@ -1670,8 +1781,10 @@ def transcribe_handwritten_script(pdf_file):
     return _sanitize_extracted_text(response.text.strip())
 
 @api_view(['POST'])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsSubjectTeacher])
 def generate_script_analysis_pdf(request):
+    # FR15: Subject Teacher only. Nothing to scope - it renders only text
+    # the caller already holds and posts back; no learner is looked up.
     """
     Renders an already-generated AI Script Analysis report as a
     downloadable PDF. Takes the report text plus learner/subject/

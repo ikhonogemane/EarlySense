@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from django.apps import apps
 from django.contrib.auth.models import AnonymousUser
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
 from django.test import TestCase
 from rest_framework import status
@@ -22,6 +23,9 @@ from .models import (
     MarkRecord,
     Incident,
     RiskScore,
+    Alert,
+    Referral,
+    Report,
     sync_user_roles_from_legacy,
     replace_user_roles_from_legacy,
 )
@@ -1138,6 +1142,361 @@ class C2ClassTrendsTests(C2Fixture, APITestCase):
         self.assertEqual(self._incident_types(user), {'Type-8A'})
 
 
+# ─── PHASE c3: alerts (FR10, NFR16, NFR17) ───────────────────────────
+# Subject Teacher is an alert recipient by client decision, a deviation
+# from FR10 and Table 7 (see ALERT_ROLES in permissions.py).
+
+class C3AlertFixture(C2Fixture):
+    def setUp(self):
+        super().setUp()
+        self.alerts = {
+            learner.class_group: Alert.objects.create(
+                learner=learner, alert_type='Performance',
+                message=f'Alert for {learner.class_group}',
+            )
+            for learner in (self.l8a, self.l8b, self.l9a)
+        }
+
+    def _alert_ids(self, user):
+        return self._get_ids(user, '/api/alerts/')
+
+    def _unread(self, class_group):
+        self.alerts[class_group].refresh_from_db()
+        return not self.alerts[class_group].is_read
+
+
+class C3AlertRoleMatrixTests(C3AlertFixture, APITestCase):
+    def _requests(self):
+        return [
+            ('alert-list', 'get', '/api/alerts/'),
+            ('alert-read', 'patch', f'/api/alerts/{self.alerts["8A"].id}/read/'),
+            ('alert-read-all', 'post', '/api/alerts/read-all/'),
+        ]
+
+    def test_only_register_subject_teacher_and_grade_head_reach_alerts(self):
+        allowed = {'rt', 'st', 'gh'}
+        for label, method, url in self._requests():
+            for key, user in self.users.items():
+                self.client.force_authenticate(user=user)
+                response = getattr(self.client, method)(url, {}, format='json')
+                expected = (
+                    status.HTTP_200_OK if key in allowed else status.HTTP_403_FORBIDDEN
+                )
+                self.assertEqual(response.status_code, expected, f'{label} as {key}')
+
+    def test_anonymous_caller_gets_401(self):
+        self.client.force_authenticate(user=None)
+        for label, method, url in self._requests():
+            response = getattr(self.client, method)(url, {}, format='json')
+            self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED, label)
+
+
+class C3AlertScopeTests(C3AlertFixture, APITestCase):
+    def test_register_and_subject_teacher_see_only_own_class(self):
+        own = {self.alerts['8A'].id}
+        self.assertEqual(self._alert_ids(self.users['rt']), own)
+        self.assertEqual(self._alert_ids(self.users['st']), own)
+
+    def test_grade_head_sees_own_grade(self):
+        self.assertEqual(
+            self._alert_ids(self.users['gh']),
+            {self.alerts['8A'].id, self.alerts['8B'].id},
+        )
+
+    def test_subject_teacher_with_no_scope_sees_none(self):
+        user = _make_scoped_user('c3_st_noscope', [(Role.SUBJECT_TEACHER, None, None)])
+        self.assertEqual(self._alert_ids(user), set())
+
+    def test_subject_teacher_cannot_mark_an_out_of_scope_alert_read(self):
+        self.client.force_authenticate(user=self.users['st'])
+        response = self.client.patch(
+            f'/api/alerts/{self.alerts["8B"].id}/read/', {}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertTrue(self._unread('8B'))
+
+    def test_read_all_only_touches_alerts_in_scope(self):
+        self.client.force_authenticate(user=self.users['st'])
+        response = self.client.post('/api/alerts/read-all/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(self._unread('8A'))
+        self.assertTrue(self._unread('8B'))
+        self.assertTrue(self._unread('9A'))
+
+    def test_grade_head_read_all_leaves_other_grades_unread(self):
+        self.client.force_authenticate(user=self.users['gh'])
+        self.client.post('/api/alerts/read-all/', {}, format='json')
+        self.assertFalse(self._unread('8A'))
+        self.assertFalse(self._unread('8B'))
+        self.assertTrue(self._unread('9A'))
+
+
+# ─── PHASE c3: dashboard, referrals, reports, script analysis ────────
+# (FR09, FR12, FR13, FR15, FR17, NFR16-NFR19)
+
+class C3Fixture(C3AlertFixture):
+    """
+    Adds referrals for 8A (one by the 8A Register Teacher, one by another
+    8A Register Teacher), 8B and 9A, and one Report row each for the
+    Register Teacher and the School Clerk.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.other_rt = _make_scoped_user('c3_rt_other', [(Role.REGISTER_TEACHER, 8, '8A')])
+        self.referrals = {
+            '8A-own': self._referral(self.l8a, self.users['rt']),
+            '8A-other': self._referral(self.l8a, self.other_rt),
+            '8B': self._referral(self.l8b, None),
+            '9A': self._referral(self.l9a, None),
+        }
+        self.reports = {
+            key: Report.objects.create(
+                generated_by=self.users[key], report_type='at_risk',
+                parameters={}, file_path='', file_size_kb=1,
+            )
+            for key in ('rt', 'sc')
+        }
+
+    def _referral(self, learner, referred_by):
+        return Referral.objects.create(
+            learner=learner, referred_by=referred_by, reason='Hunger',
+            urgency='High', follow_up_date=date(2026, 11, 1),
+        )
+
+    def _referral_payload(self, learner, **extra):
+        payload = {
+            'learner': learner.id, 'reason': 'Hunger', 'urgency': 'High',
+            'follow_up_date': '2026-11-01', 'notes': 'Test',
+        }
+        payload.update(extra)
+        return payload
+
+    def _referral_ids(self, user):
+        return self._get_ids(user, '/api/referrals/')
+
+    def _ref_url(self, key):
+        return f'/api/referrals/{self.referrals[key].id}/'
+
+
+class C3RoleMatrixTests(C3Fixture, APITestCase):
+    def _requests(self):
+        # (label, method, url, payload, roles allowed, success status)
+        return [
+            ('dashboard', 'get', '/api/dashboard/', None, {'gh', 'sc'}, 200),
+            ('referral-list', 'get', '/api/referrals/', None,
+             {'rt', 'gh', 'wo'}, 200),
+            ('referral-list POST', 'post', '/api/referrals/',
+             self._referral_payload(self.l8a), {'rt'}, 201),
+            ('referral-detail', 'get', self._ref_url('8A-own'), None,
+             {'rt', 'gh', 'wo'}, 200),
+            ('referral-detail PATCH', 'patch', self._ref_url('8A-own'),
+             {'notes': 'Updated'}, {'gh', 'wo'}, 200),
+            ('report-list', 'get', '/api/reports/', None,
+             {'rt', 'gh', 'sc', 'wo'}, 200),
+            ('generate-report', 'get', '/api/reports/generate/?type=all&format=csv',
+             None, {'rt', 'gh', 'sc', 'wo'}, 200),
+            # An empty payload proves permission was granted: the view's
+            # own 400 is reached instead of the permission layer's 403.
+            ('analyse-script', 'post', '/api/analyse-script/', {}, {'st'}, 400),
+            ('generate-script-pdf', 'post', '/api/generate-script-pdf/', {},
+             {'st'}, 400),
+        ]
+
+    def test_each_role_gets_exactly_the_endpoints_it_is_allowed(self):
+        for label, method, url, payload, allowed, ok_status in self._requests():
+            for key, user in self.users.items():
+                self.client.force_authenticate(user=user)
+                response = getattr(self.client, method)(url, payload, format='json')
+                expected = ok_status if key in allowed else status.HTTP_403_FORBIDDEN
+                self.assertEqual(response.status_code, expected, f'{label} as {key}')
+
+    def test_anonymous_caller_gets_401_everywhere(self):
+        self.client.force_authenticate(user=None)
+        for label, method, url, payload, _, _ in self._requests():
+            response = getattr(self.client, method)(url, payload, format='json')
+            self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED, label)
+
+    def test_denied_writes_for_every_role(self):
+        writes = [
+            ('delete', self._ref_url('8A-own'), None),
+            ('post', '/api/reports/', {'report_type': 'x', 'parameters': {},
+                                       'file_path': '', 'file_size_kb': 1}),
+        ]
+        counts_before = (Referral.objects.count(), Report.objects.count())
+        for method, url, payload in writes:
+            for key, user in self.users.items():
+                self.client.force_authenticate(user=user)
+                response = getattr(self.client, method)(url, payload, format='json')
+                self.assertIn(
+                    response.status_code,
+                    (status.HTTP_403_FORBIDDEN, status.HTTP_405_METHOD_NOT_ALLOWED),
+                    f'{method.upper()} {url} as {key}',
+                )
+        self.assertEqual(counts_before, (Referral.objects.count(), Report.objects.count()))
+
+
+class C3DashboardScopeTests(C3Fixture, APITestCase):
+    def _stats(self, user):
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/api/dashboard/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data
+
+    def test_grade_head_counts_own_grade_only(self):
+        data = self._stats(self.users['gh'])
+        self.assertEqual(data['total_learners'], 2)
+        self.assertEqual(data['unread_alerts'], 2)
+
+    def test_school_clerk_counts_whole_school(self):
+        data = self._stats(self.users['sc'])
+        self.assertEqual(data['total_learners'], 3)
+        self.assertEqual(data['unread_alerts'], 3)
+
+
+class C3ReferralScopeTests(C3Fixture, APITestCase):
+    def _ids(self, *keys):
+        return {self.referrals[k].id for k in keys}
+
+    def test_register_teacher_sees_only_referrals_they_made(self):
+        self.assertEqual(self._referral_ids(self.users['rt']), self._ids('8A-own'))
+
+    def test_grade_head_sees_own_grade(self):
+        self.assertEqual(
+            self._referral_ids(self.users['gh']), self._ids('8A-own', '8A-other', '8B')
+        )
+
+    def test_wellness_office_sees_whole_queue(self):
+        self.assertEqual(
+            self._referral_ids(self.users['wo']),
+            self._ids('8A-own', '8A-other', '8B', '9A'),
+        )
+
+    def test_combined_roles_get_the_union(self):
+        # Own referral (Register Teacher) plus grade 9 (Grade Head).
+        UserRole.objects.create(
+            user=self.other_rt, role=Role.objects.get(name=Role.GRADE_HEAD), grade_scope=9,
+        )
+        self.assertEqual(self._referral_ids(self.other_rt), self._ids('8A-other', '9A'))
+
+    def test_wellness_office_who_is_also_register_teacher_still_sees_all(self):
+        UserRole.objects.create(
+            user=self.other_rt, role=Role.objects.get(name=Role.WELLNESS_OFFICE),
+        )
+        self.assertEqual(
+            self._referral_ids(self.other_rt),
+            self._ids('8A-own', '8A-other', '8B', '9A'),
+        )
+
+    def test_out_of_scope_referral_is_404(self):
+        self.client.force_authenticate(user=self.users['rt'])
+        self.assertEqual(
+            self.client.get(self._ref_url('8A-other')).status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        self.client.force_authenticate(user=self.users['gh'])
+        self.assertEqual(
+            self.client.get(self._ref_url('9A')).status_code, status.HTTP_404_NOT_FOUND
+        )
+        self.assertEqual(
+            self.client.patch(self._ref_url('9A'), {'notes': 'x'}, format='json').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+
+class C3ReferralWriteTests(C3Fixture, APITestCase):
+    def test_register_teacher_post_ignores_assignee_status_and_referrer(self):
+        rt = self.users['rt']
+        self.client.force_authenticate(user=rt)
+        response = self.client.post('/api/referrals/', self._referral_payload(
+            self.l8a, assigned_to=self.users['wo'].id, status='Resolved',
+            referred_by=self.users['sc'].id, resolution_notes='Closed',
+        ), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        referral = Referral.objects.get(id=response.data['id'])
+        self.assertEqual(referral.status, 'Open')
+        self.assertIsNone(referral.assigned_to)
+        self.assertEqual(referral.referred_by, rt)
+        self.assertIsNone(referral.resolution_notes)
+
+    def test_register_teacher_cannot_refer_a_learner_outside_own_class(self):
+        self.client.force_authenticate(user=self.users['rt'])
+        before = Referral.objects.count()
+        response = self.client.post(
+            '/api/referrals/', self._referral_payload(self.l8b), format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['invalid_learner_ids'], [self.l8b.id])
+        self.assertEqual(Referral.objects.count(), before)
+
+    def test_assignee_must_hold_grade_head_or_wellness_office(self):
+        self.client.force_authenticate(user=self.users['wo'])
+        url = self._ref_url('8B')
+        response = self.client.patch(url, {'assigned_to': self.users['rt'].id}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.referrals['8B'].refresh_from_db()
+        self.assertIsNone(self.referrals['8B'].assigned_to)
+
+        response = self.client.patch(url, {'assigned_to': self.users['gh'].id}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.referrals['8B'].refresh_from_db()
+        self.assertEqual(self.referrals['8B'].assigned_to, self.users['gh'])
+
+    def test_update_cannot_change_learner_or_referrer(self):
+        self.client.force_authenticate(user=self.users['wo'])
+        response = self.client.patch(self._ref_url('8A-own'), {
+            'learner': self.l9a.id, 'referred_by': self.users['sc'].id, 'status': 'In_Progress',
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        referral = self.referrals['8A-own']
+        referral.refresh_from_db()
+        self.assertEqual(referral.learner, self.l8a)
+        self.assertEqual(referral.referred_by, self.users['rt'])
+        self.assertEqual(referral.status, 'In_Progress')
+
+
+class C3ReportTests(C3Fixture, APITestCase):
+    def _report_csv(self, user):
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/api/reports/generate/?type=all&format=csv')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.content.decode()
+
+    def test_generate_report_is_limited_to_own_area(self):
+        rt_csv = self._report_csv(self.users['rt'])
+        self.assertIn('Eight-A', rt_csv)
+        self.assertNotIn('Eight-B', rt_csv)
+        gh_csv = self._report_csv(self.users['gh'])
+        self.assertIn('Eight-A', gh_csv)
+        self.assertIn('Eight-B', gh_csv)
+        self.assertNotIn('Nine-A', gh_csv)
+        sc_csv = self._report_csv(self.users['sc'])
+        self.assertIn('Nine-A', sc_csv)
+
+    def test_report_list_shows_only_own_reports(self):
+        self.assertEqual(
+            self._get_ids(self.users['rt'], '/api/reports/'), {self.reports['rt'].id}
+        )
+        self.assertEqual(
+            self._get_ids(self.users['sc'], '/api/reports/'), {self.reports['sc'].id}
+        )
+        self.assertEqual(self._get_ids(self.users['gh'], '/api/reports/'), set())
+
+
+class C3ScriptAnalysisScopeTests(C3Fixture, APITestCase):
+    def test_out_of_scope_learner_is_404_before_any_analysis(self):
+        self.client.force_authenticate(user=self.users['st'])
+        response = self.client.post('/api/analyse-script/', {
+            'learner_id': self.l8b.id,
+            'subject': 'Maths',
+            'assessment_name': 'Test 1',
+            'script': SimpleUploadedFile('script.pdf', b'%PDF-1.4', 'application/pdf'),
+            'memo': SimpleUploadedFile('memo.pdf', b'%PDF-1.4', 'application/pdf'),
+            'question_paper': SimpleUploadedFile('qp.pdf', b'%PDF-1.4', 'application/pdf'),
+        }, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
 # Open to all six roles by design, forever - not migrated later, never
 # expected to gain a role-specific permission class.
 OPEN_BY_DESIGN = {'login', 'token_refresh', 'current-user'}
@@ -1148,18 +1507,7 @@ OPEN_BY_DESIGN = {'login', 'token_refresh', 'current-user'}
 # IsAuthenticated/AllowAny/empty. See test_allow_list_is_not_stale below,
 # which fails if an entry here has already been migrated and should have
 # been removed.
-NOT_YET_MIGRATED = {
-    'dashboard',
-    'alert-list',
-    'alert-read',
-    'alert-read-all',
-    'referral-list',
-    'referral-detail',
-    'generate-report',
-    'report-list',
-    'analyse-script',
-    'generate-script-pdf',
-}
+NOT_YET_MIGRATED = set()
 
 
 def _permission_classes_for(callback):

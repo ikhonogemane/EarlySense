@@ -62,6 +62,19 @@ PROFILE_ROLES = (
 CAPTURE_ROLES = (Role.REGISTER_TEACHER, Role.SUBJECT_TEACHER)  # FR05, FR06
 ROSTER_ROLES = (Role.SUBJECT_TEACHER,)  # class roster only (id, name, grade, class)
 WHOLE_SCHOOL_ROLES = (Role.SCHOOL_CLERK, Role.WELLNESS_OFFICE)  # NFR17
+# FR10 names the Register Teacher and Grade Head. The Subject Teacher is
+# added by client decision (deviation from FR10 and Table 7): a subject
+# teacher must know when a learner in their class is at risk, so they can
+# intervene when the cause is marks. Each sees alerts within own scope.
+ALERT_ROLES = (Role.REGISTER_TEACHER, Role.SUBJECT_TEACHER, Role.GRADE_HEAD)
+DASHBOARD_ROLES = (Role.GRADE_HEAD, Role.SCHOOL_CLERK)  # FR09
+MANAGE_REFERRAL_ROLES = (Role.GRADE_HEAD, Role.WELLNESS_OFFICE)  # FR13
+REFERRAL_READ_ROLES = (Role.REGISTER_TEACHER,) + MANAGE_REFERRAL_ROLES  # FR12, FR13
+# FR17 names all six roles, but no report type exists yet for the Subject
+# Teacher or the System Administrator, so both are left out until one
+# does (deferred; the SA must also never get learner data, NFR19).
+REPORT_ROLES = PROFILE_ROLES
+SCRIPT_ROLES = (Role.SUBJECT_TEACHER,)  # FR15
 
 
 def learner_scope_q(user, roles, prefix=""):
