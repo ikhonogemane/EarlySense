@@ -1,13 +1,19 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
-import { getLearners } from "../services/api";
+import AccessDenied from "../components/AccessDenied";
+import { getLearners, getCurrentUser } from "../services/api";
+import { ROLES, hasAnyRole, isForbidden } from "../constants/roles";
 import { Search, X } from "lucide-react";
 
 export default function LearnerList() {
   const navigate = useNavigate();
+  // FR04: only the School Clerk imports learners, so only they are told
+  // to upload a CSV when the list is empty.
+  const isClerk = hasAnyRole(getCurrentUser(), [ROLES.SCHOOL_CLERK]);
   const [learners, setLearners] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [search, setSearch] = useState("");
   const [grade, setGrade] = useState("");
   const [risk, setRisk] = useState("");
@@ -23,6 +29,7 @@ export default function LearnerList() {
       const res = await getLearners(params);
       setLearners(res.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -45,6 +52,7 @@ export default function LearnerList() {
   };
 
   if (loading) return <div style={styles.loadingPage}>Loading learners...</div>;
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>
@@ -111,7 +119,9 @@ export default function LearnerList() {
             {filtered.length === 0 ? (
               <div style={styles.emptyState}>
                 {learners.length === 0
-                  ? "No learners in the system yet. Upload a CSV to add learners."
+                  ? isClerk
+                    ? "No learners in the system yet. Upload a CSV to add learners."
+                    : "No learners in your scope."
                   : "No learners match your filters."}
               </div>
             ) : (

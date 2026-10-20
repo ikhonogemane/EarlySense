@@ -1,36 +1,46 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import {
   getLearner,
   getAttendance,
   getMarks,
   getIncidents,
   createReferral,
-  getStaff,
+  getCurrentUser,
 } from "../services/api";
+import {
+  REFERRAL_CREATE_ROLES,
+  hasAnyRole,
+  isForbidden,
+} from "../constants/roles";
+import { defaultFollowUpDate } from "../utils/dates";
 import { MapPin, Phone, ClipboardPlus } from "lucide-react";
 
 export default function LearnerProfile() {
   const { id } = useParams();
   const navigate = useNavigate();
+  // FR12: only a Register Teacher creates referrals; the server sets the
+  // status and leaves it unassigned.
+  const canRefer = hasAnyRole(getCurrentUser(), REFERRAL_CREATE_ROLES);
 
   const [learner, setLearner] = useState(null);
   const [attendance, setAttendance] = useState([]);
   const [marks, setMarks] = useState([]);
   const [incidents, setIncidents] = useState([]);
-  const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [refSuccess, setRefSuccess] = useState("");
+  const [refError, setRefError] = useState("");
 
-  const [refForm, setRefForm] = useState({
+  const [refForm, setRefForm] = useState(() => ({
     reason: "Attendance",
     urgency: "High",
-    assigned_to: "",
-    follow_up_date: "",
+    follow_up_date: defaultFollowUpDate(),
     notes: "",
-  });
+  }));
 
   useEffect(() => {
     fetchAll();
@@ -51,33 +61,29 @@ export default function LearnerProfile() {
       setAttendance(results[1].data);
       setMarks(results[2].data);
       setIncidents(results[3].data);
-
-      // FR13: only Grade Head / Wellness Office may list assignable staff.
-      // A 403 here leaves the dropdown empty instead of failing the page.
-      try {
-        const staffRes = await getStaff();
-        setUsers(staffRes.data);
-      } catch (err) {
-        if (err.response?.status === 403) { setUsers([]); } else { throw err; }
-      }
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
     }
   };
   const handleReferral = async () => {
-    if (!refForm.assigned_to || !refForm.follow_up_date) {
-      alert("Please fill in all required fields");
+    if (!refForm.follow_up_date) {
+      setRefError("Please choose a follow-up date");
       return;
     }
     try {
       await createReferral({ ...refForm, learner: id });
       setRefSuccess("Referral submitted successfully!");
+      setRefError("");
       setShowModal(false);
       setTimeout(() => setRefSuccess(""), 3000);
     } catch (err) {
-      console.error(err);
+      setRefError(
+        err.response?.data?.error ||
+          "Failed to create referral. Please try again.",
+      );
     }
   };
 
@@ -110,7 +116,13 @@ export default function LearnerProfile() {
 
   if (loading)
     return <div style={styles.loadingPage}>Loading learner profile...</div>;
-  if (!learner) return <div style={styles.loadingPage}>Learner not found.</div>;
+  if (forbidden) return <AccessDenied />;
+  if (!learner)
+    return (
+      <div style={styles.loadingPage}>
+        Learner not found, or not in your class or grade.
+      </div>
+    );
 
   return (
     <div style={styles.page}>
@@ -191,6 +203,7 @@ export default function LearnerProfile() {
                 </div>
               )}
               <div style={styles.profileActions}>
+                {canRefer && (
                 <button
                   style={{
                     ...styles.btnPrimary,
@@ -203,6 +216,7 @@ export default function LearnerProfile() {
                   <ClipboardPlus size={14} />
                   Create Referral
                 </button>
+                )}
                 <button
                   style={{
                     ...styles.btnSecondary,
@@ -361,7 +375,7 @@ export default function LearnerProfile() {
         </div>
 
         {/* Referral Modal */}
-        {showModal && (
+        {showModal && canRefer && (
           <div style={styles.modalOverlay}>
             <div style={styles.modal}>
               <div style={styles.modalTitle}>Create Referral</div>
@@ -397,21 +411,7 @@ export default function LearnerProfile() {
                 <option value="Low">Low</option>
               </select>
 
-              <label style={styles.label}>Assign To</label>
-              <select
-                style={styles.input}
-                value={refForm.assigned_to}
-                onChange={(e) =>
-                  setRefForm({ ...refForm, assigned_to: e.target.value })
-                }
-              >
-                <option value="">Select LST member...</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.full_name}
-                  </option>
-                ))}
-              </select>
+              {refError && <div style={styles.refError}>{refError}</div>}
 
               <label style={styles.label}>Follow-up Date</label>
               <input
@@ -699,5 +699,14 @@ const styles = {
     boxSizing: "border-box",
     height: "80px",
     resize: "none",
+  },
+  refError: {
+    background: "#fef2f2",
+    border: "1px solid #fecaca",
+    color: "#dc2626",
+    borderRadius: "8px",
+    padding: "8px 12px",
+    fontSize: "12px",
+    marginBottom: "10px",
   },
 };

@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import { getAuditLog } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import { Search } from "lucide-react";
 
 export default function AuditLog() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [search, setSearch] = useState("");
 
   useEffect(() => {
@@ -17,6 +20,7 @@ export default function AuditLog() {
       const res = await getAuditLog();
       setLogs(res.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -39,6 +43,7 @@ export default function AuditLog() {
 
   if (loading)
     return <div style={styles.loadingPage}>Loading audit log...</div>;
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>

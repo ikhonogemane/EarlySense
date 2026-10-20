@@ -1,10 +1,8 @@
 import MarkAttendance from "./pages/MarkAttendance";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { useAuth, ROLES } from "./context/AuthContext";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import EducatorDashboard from "./pages/EducatorDashboard";
-import LSTDashboard from "./pages/LSTDashboard";
 import LearnerList from "./pages/LearnerList";
 import LearnerProfile from "./pages/LearnerProfile";
 import Alerts from "./pages/Alerts";
@@ -15,29 +13,39 @@ import UserManagement from "./pages/UserManagement";
 import AuditLog from "./pages/AuditLog";
 import MapView from "./pages/MapView";
 import ScriptAnalysis from './pages/ScriptAnalysis';
+import AccessDenied from "./components/AccessDenied";
+import { PAGE_ROLES, hasAnyRole, getHomePath } from "./constants/roles";
+
+const getStoredUser = () => JSON.parse(localStorage.getItem("user") || "{}");
 
 // ─── PROTECTED ROUTE ─────────────────────────────────────
+// FR01, NFR18: allowed if the user holds ANY of allowedRoles. The server
+// enforces the same rules (NFR16); this only stops the page opening.
 const ProtectedRoute = ({ children, allowedRoles }) => {
   const token = localStorage.getItem("access_token");
   if (!token) return <Navigate to="/login" />;
 
-  if (allowedRoles) {
-    const user = JSON.parse(localStorage.getItem("user") || "{}");
-    if (!allowedRoles.includes(user.role)) {
-      return <Navigate to="/" />;
-    }
+  if (allowedRoles && !hasAnyRole(getStoredUser(), allowedRoles)) {
+    return <AccessDenied />;
   }
   return children;
 };
 
 // ─── ROLE BASED HOME ─────────────────────────────────────
+// Landing page for users with several roles, first match wins: Grade
+// Head, Wellness Office, School Clerk, Register Teacher, Subject Teacher,
+// System Administrator.
 const RoleHome = () => {
-  const user = JSON.parse(localStorage.getItem("user") || "{}");
-  if (user.role === ROLES.EDUCATOR) return <EducatorDashboard />;
-  if (user.role === ROLES.LST_MEMBER) return <LSTDashboard />;
-  if (user.role === ROLES.SYSTEM_ADMIN) return <Navigate to="/users" />;
-  return <Dashboard />;
+  const home = getHomePath(getStoredUser());
+  if (home) return <Navigate to={home} replace />;
+  return (
+    <AccessDenied message="Your account has no roles assigned. Sign out and sign in again, or contact the System Administrator." />
+  );
 };
+
+const guarded = (allowedRoles, page) => (
+  <ProtectedRoute allowedRoles={allowedRoles}>{page}</ProtectedRoute>
+);
 
 function App() {
   return (
@@ -56,123 +64,22 @@ function App() {
           }
         />
 
-        {/* School Admin + System Admin only */}
-        <Route
-          path="/learners"
-          element={
-            <ProtectedRoute
-              allowedRoles={[ROLES.SCHOOL_ADMIN, ROLES.SYSTEM_ADMIN]}
-            >
-              <LearnerList />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/upload"
-          element={
-            <ProtectedRoute
-              allowedRoles={[
-                ROLES.SCHOOL_ADMIN,
-                ROLES.SYSTEM_ADMIN,
-                ROLES.EDUCATOR,
-              ]}
-            >
-              <UploadCSV />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/reports"
-          element={
-            <ProtectedRoute
-              allowedRoles={[ROLES.SCHOOL_ADMIN, ROLES.SYSTEM_ADMIN]}
-            >
-              <Reports />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* System Admin only */}
-        <Route
-          path="/users"
-          element={
-            <ProtectedRoute allowedRoles={[ROLES.SYSTEM_ADMIN]}>
-              <UserManagement />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/audit-log"
-          element={
-            <ProtectedRoute allowedRoles={[ROLES.SYSTEM_ADMIN]}>
-              <AuditLog />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* All authenticated users */}
-        <Route
-          path="/learners/:id"
-          element={
-            <ProtectedRoute>
-              <LearnerProfile />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/alerts"
-          element={
-            <ProtectedRoute>
-              <Alerts />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/referrals"
-          element={
-            <ProtectedRoute>
-              <Referrals />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/dashboard" element={guarded(PAGE_ROLES.dashboard, <Dashboard />)} />
+        <Route path="/my-class" element={guarded(PAGE_ROLES.myClass, <EducatorDashboard />)} />
+        <Route path="/learners" element={guarded(PAGE_ROLES.learners, <LearnerList />)} />
+        <Route path="/learners/:id" element={guarded(PAGE_ROLES.learners, <LearnerProfile />)} />
+        <Route path="/map" element={guarded(PAGE_ROLES.map, <MapView />)} />
+        <Route path="/alerts" element={guarded(PAGE_ROLES.alerts, <Alerts />)} />
+        <Route path="/referrals" element={guarded(PAGE_ROLES.referrals, <Referrals />)} />
+        <Route path="/attendance" element={guarded(PAGE_ROLES.attendance, <MarkAttendance />)} />
+        <Route path="/upload" element={guarded(PAGE_ROLES.upload, <UploadCSV />)} />
+        <Route path="/reports" element={guarded(PAGE_ROLES.reports, <Reports />)} />
+        <Route path="/script-analysis" element={guarded(PAGE_ROLES.scriptAnalysis, <ScriptAnalysis />)} />
+        <Route path="/users" element={guarded(PAGE_ROLES.users, <UserManagement />)} />
+        <Route path="/audit-log" element={guarded(PAGE_ROLES.auditLog, <AuditLog />)} />
 
         {/* Catch all */}
         <Route path="*" element={<Navigate to="/" />} />
-
-        <Route
-          path="/attendance"
-          element={
-            <ProtectedRoute
-              allowedRoles={[
-                ROLES.EDUCATOR,
-                ROLES.SCHOOL_ADMIN,
-                ROLES.SYSTEM_ADMIN,
-              ]}
-            >
-              <MarkAttendance />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/map"
-          element={
-            <ProtectedRoute
-              allowedRoles={[ROLES.SCHOOL_ADMIN, ROLES.SYSTEM_ADMIN]}
-            >
-              <MapView />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/script-analysis"
-          element={
-            <ProtectedRoute allowedRoles={[ROLES.EDUCATOR, ROLES.SCHOOL_ADMIN]}>
-              <ScriptAnalysis />
-            </ProtectedRoute>
-          }
-        />
       </Routes>
     </BrowserRouter>
   );

@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import {
   getLearners,
   analyseScript,
   downloadScriptAnalysisPDF,
 } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import {
   Upload,
   Brain,
@@ -51,6 +53,7 @@ const isShortCell = (text) => /^[\d.,/%\s-]{1,12}$/.test(text.trim());
 export default function ScriptAnalysis() {
   const [learners, setLearners] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [analysing, setAnalysing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
@@ -93,6 +96,7 @@ export default function ScriptAnalysis() {
       const res = await getLearners();
       setLearners(res.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -140,7 +144,14 @@ export default function ScriptAnalysis() {
       const data = await analyseScript(formData);
       setResult(data.data);
     } catch (err) {
-      setError("Analysis failed. Please check your files and try again.");
+      // FR15: a learner outside the Subject Teacher's classes is a 404.
+      setError(
+        isForbidden(err)
+          ? "You do not have access to script analysis."
+          : err.response?.status === 404
+            ? "This learner is not in a class you teach."
+            : "Analysis failed. Please check your files and try again.",
+      );
       console.error(err);
     } finally {
       setAnalysing(false);
@@ -540,6 +551,7 @@ export default function ScriptAnalysis() {
   };
 
   if (loading) return <div style={styles.loadingPage}>Loading...</div>;
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>

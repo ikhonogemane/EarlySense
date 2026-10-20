@@ -1,6 +1,7 @@
 import { useState } from "react";
 import Sidebar from "../components/Sidebar";
-import { uploadCSV, getCurrentUser } from "../services/api";
+import { uploadCSV } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import {
   FolderOpen,
   CheckCircle,
@@ -11,10 +12,8 @@ import {
 } from "lucide-react";
 
 export default function UploadCSV() {
-  const currentUser = getCurrentUser();
-  const [uploadType, setUploadType] = useState(
-    currentUser?.role === "Educator" ? "attendance" : "learners",
-  );
+  // FR04: the School Clerk imports learners, attendance and marks.
+  const [uploadType, setUploadType] = useState("learners");
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
@@ -47,7 +46,11 @@ export default function UploadCSV() {
       setResult(res.data);
       setStep(4);
     } catch (err) {
-      setError(err.response?.data?.error || "Upload failed. Please try again.");
+      setError(
+        isForbidden(err)
+          ? "You do not have access to upload data."
+          : err.response?.data?.error || "Upload failed. Please try again.",
+      );
       setStep(2);
     } finally {
       setLoading(false);
@@ -132,23 +135,11 @@ export default function UploadCSV() {
                     value={uploadType}
                     onChange={(e) => setUploadType(e.target.value)}
                   >
-                    {currentUser?.role !== "Educator" && (
-                      <option value="learners">Learner Class List</option>
-                    )}
+                    <option value="learners">Learner Class List</option>
                     <option value="attendance">Attendance Data</option>
                     <option value="marks">Marks / Assessment Data</option>
                   </select>
                 </div>
-
-                {currentUser?.role === "Educator" && (
-                  <div style={styles.classInfo}>
-                    Uploading for:{" "}
-                    <strong>
-                      Grade {currentUser.assigned_grade} —{" "}
-                      {currentUser.assigned_class_group}
-                    </strong>
-                  </div>
-                )}
 
                 <label style={styles.uploadZone}>
                   <input

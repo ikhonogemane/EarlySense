@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import { getReports, generateReport } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import {
   AlertOctagon,
   CalendarClock,
@@ -18,6 +20,7 @@ export default function Reports() {
   const [grade, setGrade] = useState("All Grades");
   const [format, setFormat] = useState("PDF");
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [success, setSuccess] = useState("");
 
@@ -30,6 +33,7 @@ export default function Reports() {
       const res = await getReports();
       setReports(res.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -79,6 +83,7 @@ const handleGenerate = async (fmt) => {
   ];
 
   if (loading) return <div style={styles.loadingPage}>Loading reports...</div>;
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>

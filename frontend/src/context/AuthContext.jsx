@@ -27,14 +27,4 @@ export function useAuth() {
   return useContext(AuthContext);
 }
 
-// Role helpers
-export const ROLES = {
-  EDUCATOR:     'Educator',
-  SCHOOL_ADMIN: 'School_Admin',
-  SYSTEM_ADMIN: 'System_Admin',
-  LST_MEMBER:   'LST_Member',
-};
-
-export function canAccess(userRole, allowedRoles) {
-  return allowedRoles.includes(userRole);
-}
+// Role names and role checks live in ../constants/roles.js.

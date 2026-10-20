@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import {
   getLearners,
   getAlerts,
@@ -8,6 +9,7 @@ import {
   getCurrentUser,
   getEducatorClassTrends,
 } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import {
   PieChart,
   Pie,
@@ -36,6 +38,7 @@ export default function EducatorDashboard() {
     incident_breakdown: [],
   });
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [success, setSuccess] = useState("");
 
@@ -62,6 +65,7 @@ export default function EducatorDashboard() {
       setAlerts(aRes.data.filter((a) => !a.is_read).slice(0, 5));
       setTrends(tRes.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -99,6 +103,7 @@ export default function EducatorDashboard() {
   };
 
   if (loading) return <div style={styles.loadingPage}>Loading...</div>;
+  if (forbidden) return <AccessDenied />;
 
   const atRisk = learners.filter(
     (l) => l.risk_level === "High" || l.risk_level === "Medium",

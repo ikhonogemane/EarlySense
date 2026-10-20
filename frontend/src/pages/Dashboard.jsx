@@ -1,7 +1,14 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
-import { getDashboardStats, getLearners } from "../services/api";
+import AccessDenied from "../components/AccessDenied";
+import { getDashboardStats, getLearners, getCurrentUser } from "../services/api";
+import {
+  ROLES,
+  PAGE_ROLES,
+  hasAnyRole,
+  isForbidden,
+} from "../constants/roles";
 import {
   PieChart,
   Pie,
@@ -36,6 +43,11 @@ const COLORS = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
+  const user = getCurrentUser();
+  // FR04: only the School Clerk imports data. FR10: alerts page roles.
+  const isClerk = hasAnyRole(user, [ROLES.SCHOOL_CLERK]);
+  const canOpenAlerts = hasAnyRole(user, PAGE_ROLES.alerts);
+  const [forbidden, setForbidden] = useState(false);
   const [stats, setStats] = useState({
     total_learners: 0,
     high_risk: 0,
@@ -62,6 +74,7 @@ export default function Dashboard() {
       setStats(statsRes.data);
       setLearners(learnersRes.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
       console.error('Dashboard error:', err);
     } finally {
@@ -139,6 +152,7 @@ export default function Dashboard() {
         <div style={styles.loadingText}>Loading EarlySense...</div>
       </div>
     );
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>
@@ -147,14 +161,17 @@ export default function Dashboard() {
         {/* Topbar */}
         <div style={styles.topbar}>
           <div style={styles.topbarTitle}>
-            School Dashboard — Kuruman Secondary
+            School Dashboard: Kimberley Boys High School
           </div>
           <div style={styles.topbarRight}>
             <span style={styles.termLabel}>Term 2, 2026</span>
             {stats.unread_alerts > 0 && (
               <span
-                style={styles.alertBadge}
-                onClick={() => navigate("/alerts")}
+                style={{
+                  ...styles.alertBadge,
+                  ...(canOpenAlerts ? {} : { cursor: "default" }),
+                }}
+                onClick={canOpenAlerts ? () => navigate("/alerts") : undefined}
               >
                 <Bell
                   size={14}
@@ -163,6 +180,7 @@ export default function Dashboard() {
                 {stats.unread_alerts} alerts
               </span>
             )}
+            {isClerk && (
             <button
               style={styles.uploadBtn}
               onClick={() => navigate("/upload")}
@@ -173,6 +191,7 @@ export default function Dashboard() {
               />
               Upload CSV
             </button>
+            )}
           </div>
         </div>
 
@@ -368,7 +387,9 @@ export default function Dashboard() {
             {filtered.length === 0 ? (
               <div style={styles.emptyState}>
                 {learners.length === 0
-                  ? "No learners yet. Upload a CSV to get started."
+                  ? isClerk
+                    ? "No learners yet. Upload a CSV to get started."
+                    : "No learners in your scope."
                   : "No learners match your search."}
               </div>
             ) : (

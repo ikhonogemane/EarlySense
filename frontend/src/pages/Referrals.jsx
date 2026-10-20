@@ -1,30 +1,48 @@
 import { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import {
   getReferrals,
   createReferral,
   updateReferral,
   getLearners,
   getStaff,
+  getCurrentUser,
 } from "../services/api";
+import {
+  REFERRAL_CREATE_ROLES,
+  REFERRAL_MANAGE_ROLES,
+  hasAnyRole,
+  isForbidden,
+} from "../constants/roles";
+import { defaultFollowUpDate } from "../utils/dates";
 import { PlusCircle, Play, CheckCircle, ClipboardList } from "lucide-react";
 
+// FR12: the Register Teacher creates a referral; the server sets it Open
+// and unassigned, so the form has no Assign To.
+const emptyForm = () => ({
+  learner: "",
+  reason: "Attendance",
+  urgency: "High",
+  follow_up_date: defaultFollowUpDate(),
+  notes: "",
+});
+
 export default function Referrals() {
+  const user = getCurrentUser();
+  // FR12: create and view only. FR13: status and assignment controls.
+  const canCreate = hasAnyRole(user, REFERRAL_CREATE_ROLES);
+  const canManage = hasAnyRole(user, REFERRAL_MANAGE_ROLES);
+
   const [referrals, setReferrals] = useState([]);
   const [learners, setLearners] = useState([]);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  const [form, setForm] = useState({
-    learner: "",
-    reason: "Attendance",
-    urgency: "High",
-    assigned_to: "",
-    follow_up_date: "",
-    notes: "",
-  });
+  const [form, setForm] = useState(emptyForm);
 
   useEffect(() => {
     fetchData();
@@ -32,21 +50,25 @@ export default function Referrals() {
 
   const fetchData = async () => {
     try {
-      const [refRes, learnerRes] = await Promise.all([
-        getReferrals(),
-        getLearners(),
-      ]);
+      const refRes = await getReferrals();
       setReferrals(refRes.data);
-      setLearners(learnerRes.data);
-      // FR13: only Grade Head / Wellness Office may list assignable staff.
-      // A 403 here leaves the dropdown empty instead of failing the page.
-      try {
-        const staffRes = await getStaff();
-        setUsers(staffRes.data);
-      } catch (err) {
-        if (err.response?.status === 403) { setUsers([]); } else { throw err; }
+      if (canCreate) {
+        const learnerRes = await getLearners();
+        setLearners(learnerRes.data);
+      }
+      if (canManage) {
+        // FR13: only Grade Head / Wellness Office may list assignable
+        // staff. A 403 here leaves the dropdown empty instead of failing
+        // the page.
+        try {
+          const staffRes = await getStaff();
+          setUsers(staffRes.data);
+        } catch (err) {
+          if (err.response?.status === 403) { setUsers([]); } else { throw err; }
+        }
       }
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -54,7 +76,7 @@ export default function Referrals() {
   };
 
   const handleSubmit = async () => {
-    if (!form.learner || !form.assigned_to || !form.follow_up_date) {
+    if (!form.learner || !form.follow_up_date) {
       setError("Please fill in all required fields");
       return;
     }
@@ -62,18 +84,14 @@ export default function Referrals() {
       await createReferral(form);
       setSuccess("Referral submitted successfully!");
       setError("");
-      setForm({
-        learner: "",
-        reason: "Attendance",
-        urgency: "High",
-        assigned_to: "",
-        follow_up_date: "",
-        notes: "",
-      });
+      setForm(emptyForm());
       fetchData();
       setTimeout(() => setSuccess(""), 3000);
     } catch (err) {
-      setError("Failed to create referral. Please try again.");
+      setError(
+        err.response?.data?.error ||
+          "Failed to create referral. Please try again.",
+      );
     }
   };
 
@@ -83,6 +101,15 @@ export default function Referrals() {
       setReferrals(
         referrals.map((r) => (r.id === id ? { ...r, status: newStatus } : r)),
       );
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleAssign = async (id, assignedTo) => {
+    try {
+      const res = await updateReferral(id, { assigned_to: assignedTo || null });
+      setReferrals(referrals.map((r) => (r.id === id ? res.data : r)));
     } catch (err) {
       console.error(err);
     }
@@ -102,6 +129,17 @@ export default function Referrals() {
 
   if (loading)
     return <div style={styles.loadingPage}>Loading referrals...</div>;
+  if (forbidden) return <AccessDenied />;
+
+  const columns = [
+    "Learner",
+    "Reason",
+    "Urgency",
+    canManage ? "Assign to" : "Assigned To",
+    "Follow-up",
+    "Status",
+  ];
+  if (canManage) columns.push("Action");
 
   return (
     <div style={styles.page}>
@@ -119,7 +157,12 @@ export default function Referrals() {
         </div>
 
         <div style={styles.content}>
-          <div style={styles.grid}>
+          <div
+            style={{
+              ...styles.grid,
+              ...(canCreate ? {} : { gridTemplateColumns: "1fr" }),
+            }}
+          >
             {/* Referrals Table */}
             <div style={styles.card}>
               <div style={styles.cardTitle}>
@@ -136,21 +179,15 @@ export default function Referrals() {
 
               {referrals.length === 0 ? (
                 <div style={styles.emptyState}>
-                  No referrals yet. Create one using the form on the right.
+                  {canCreate
+                    ? "No referrals yet. Create one using the form on the right."
+                    : "No referrals in your scope."}
                 </div>
               ) : (
                 <table style={styles.table}>
                   <thead>
                     <tr>
-                      {[
-                        "Learner",
-                        "Reason",
-                        "Urgency",
-                        "Assigned To",
-                        "Follow-up",
-                        "Status",
-                        "Action",
-                      ].map((h) => (
+                      {columns.map((h) => (
                         <th key={h} style={styles.th}>
                           {h}
                         </th>
@@ -178,7 +215,34 @@ export default function Referrals() {
                               {ref.urgency}
                             </span>
                           </td>
-                          <td style={styles.td}>{ref.assigned_to_name}</td>
+                          <td style={styles.td}>
+                            {canManage ? (
+                              <select
+                                style={styles.inputXs}
+                                aria-label="Assign to"
+                                value={ref.assigned_to || ""}
+                                onChange={(e) =>
+                                  handleAssign(ref.id, e.target.value)
+                                }
+                              >
+                                <option value="">Unassigned</option>
+                                {/* Keep the current assignee selectable even if no longer listed as staff. */}
+                                {ref.assigned_to &&
+                                  !users.some((u) => u.id === ref.assigned_to) && (
+                                    <option value={ref.assigned_to}>
+                                      {ref.assigned_to_name}
+                                    </option>
+                                  )}
+                                {users.map((u) => (
+                                  <option key={u.id} value={u.id}>
+                                    {u.full_name} ({u.role})
+                                  </option>
+                                ))}
+                              </select>
+                            ) : (
+                              ref.assigned_to_name || "Unassigned"
+                            )}
+                          </td>
                           <td style={styles.td}>{ref.follow_up_date}</td>
                           <td style={styles.td}>
                             <span
@@ -191,6 +255,7 @@ export default function Referrals() {
                               {ref.status.replace("_", " ")}
                             </span>
                           </td>
+                          {canManage && (
                           <td style={styles.td}>
                             {ref.status === "Open" && (
                               <button
@@ -226,6 +291,7 @@ export default function Referrals() {
                               </button>
                             )}
                           </td>
+                          )}
                         </tr>
                       );
                     })}
@@ -234,7 +300,8 @@ export default function Referrals() {
               )}
             </div>
 
-            {/* Create Referral Form */}
+            {/* Create Referral Form (FR12: Register Teacher only) */}
+            {canCreate && (
             <div style={styles.formCard}>
               <div style={styles.cardTitle}>
                 <PlusCircle
@@ -289,22 +356,6 @@ export default function Referrals() {
                 <option value="Low">Low — Monitor and review</option>
               </select>
 
-              <label style={styles.label}>Assign to LST Member *</label>
-              <select
-                style={styles.input}
-                value={form.assigned_to}
-                onChange={(e) =>
-                  setForm({ ...form, assigned_to: e.target.value })
-                }
-              >
-                <option value="">Select LST member...</option>
-                {users.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.full_name} ({u.role})
-                  </option>
-                ))}
-              </select>
-
               <label style={styles.label}>Follow-up Date *</label>
               <input
                 style={styles.input}
@@ -323,10 +374,15 @@ export default function Referrals() {
                 onChange={(e) => setForm({ ...form, notes: e.target.value })}
               />
 
+              <div style={styles.hint}>
+                The Grade Head or Wellness Office assigns the case.
+              </div>
+
               <button style={styles.btnPrimary} onClick={handleSubmit}>
-                Submit Referral to LST
+                Submit Referral
               </button>
             </div>
+            )}
           </div>
         </div>
       </div>
@@ -496,5 +552,18 @@ const styles = {
     padding: "40px",
     color: "#9ca3af",
     fontSize: "14px",
+  },
+  inputXs: {
+    padding: "4px 6px",
+    border: "1px solid #e5e7eb",
+    borderRadius: "5px",
+    fontSize: "11px",
+    background: "#fff",
+    maxWidth: "170px",
+  },
+  hint: {
+    fontSize: "11px",
+    color: "#6b7280",
+    margin: "4px 0 12px",
   },
 };

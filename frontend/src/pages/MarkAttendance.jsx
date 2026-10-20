@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import { getLearners, markAttendance, getAttendance } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import { Save, CheckCircle, XCircle, UserCheck, UserX } from "lucide-react";
 
 export default function MarkAttendance() {
@@ -11,6 +13,7 @@ export default function MarkAttendance() {
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
   const [grade, setGrade] = useState("");
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [saving, setSaving] = useState(false);
   const [success, setSuccess] = useState("");
   const [error, setError] = useState("");
@@ -33,6 +36,7 @@ export default function MarkAttendance() {
       });
       setAttendance(defaults);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -88,7 +92,13 @@ export default function MarkAttendance() {
       setSuccess(res.data.message);
       setTimeout(() => setSuccess(""), 3000);
     } catch (err) {
-      setError("Failed to save attendance. Please try again.");
+      // FR05: the server names learners outside the teacher's classes.
+      setError(
+        isForbidden(err)
+          ? "You do not have access to mark attendance."
+          : err.response?.data?.error ||
+              "Failed to save attendance. Please try again.",
+      );
     } finally {
       setSaving(false);
     }
@@ -98,6 +108,7 @@ export default function MarkAttendance() {
   const absentCount = learners.length - presentCount;
 
   if (loading) return <div style={styles.loadingPage}>Loading learners...</div>;
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>

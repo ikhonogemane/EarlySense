@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import { getLearners } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import "leaflet/dist/leaflet.css";
 
 const SCHOOL_POSITION = [-27.4541, 23.4432];
@@ -28,6 +30,7 @@ const getRiskColor = (level) => {
 export default function MapView() {
   const [learners, setLearners] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
   const [filter, setFilter] = useState("All");
 
   useEffect(() => {
@@ -39,6 +42,7 @@ export default function MapView() {
       const res = await getLearners();
       setLearners(res.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -67,6 +71,7 @@ export default function MapView() {
   };
 
   if (loading) return <div style={styles.loadingPage}>Loading map...</div>;
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>
@@ -159,7 +164,7 @@ export default function MapView() {
                 }}
               >
                 <Popup>
-                  <strong>Kuruman Secondary School</strong>
+                  <strong>Kimberley Boys High School</strong>
                   <br />
                   {learners.length} enrolled learners
                 </Popup>

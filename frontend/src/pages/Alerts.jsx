@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
+import AccessDenied from "../components/AccessDenied";
 import { getAlerts, markAlertRead, markAllAlertsRead } from "../services/api";
+import { isForbidden } from "../constants/roles";
 import {
   AlertOctagon,
   CalendarClock,
@@ -15,6 +17,7 @@ export default function Alerts() {
   const [alerts, setAlerts] = useState([]);
   const [filter, setFilter] = useState("All");
   const [loading, setLoading] = useState(true);
+  const [forbidden, setForbidden] = useState(false);
 
   useEffect(() => {
     fetchAlerts();
@@ -25,6 +28,7 @@ export default function Alerts() {
       const res = await getAlerts();
       setAlerts(res.data);
     } catch (err) {
+      if (isForbidden(err)) setForbidden(true);
       console.error(err);
     } finally {
       setLoading(false);
@@ -86,6 +90,7 @@ export default function Alerts() {
         <div>Loading alerts...</div>
       </div>
     );
+  if (forbidden) return <AccessDenied />;
 
   return (
     <div style={styles.page}>

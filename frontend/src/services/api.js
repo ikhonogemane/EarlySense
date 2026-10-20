@@ -106,7 +106,9 @@ export const markAllAlertsRead = () => api.post("/alerts/read-all/");
 // ─── REFERRALS ───────────────────────────────────────────
 export const getReferrals = (params) => api.get("/referrals/", { params });
 export const createReferral = (data) => api.post("/referrals/", data);
-export const updateReferral = (id, data) => api.put(`/referrals/${id}/`, data);
+// PATCH, not PUT: status and assignment changes send only the changed
+// fields (FR13); a PUT would require every field.
+export const updateReferral = (id, data) => api.patch(`/referrals/${id}/`, data);
 
 // ─── REPORTS ─────────────────────────────────────────────
 export const getReports = () => api.get("/reports/");

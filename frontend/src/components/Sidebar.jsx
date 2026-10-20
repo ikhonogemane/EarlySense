@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { logout, getCurrentUser } from "../services/api";
-import { ROLES } from "../context/AuthContext";
+import { PAGE_ROLES, getUserRoles, hasAnyRole } from "../constants/roles";
 import {
   LayoutDashboard,
   Users,
@@ -16,90 +16,33 @@ import {
   Brain,
 } from "lucide-react";
 
+// FR01, NFR18: one list of links; each user sees the links of every role
+// they hold, once each, in this order.
+const NAV_ITEMS = [
+  { path: "/dashboard", icon: <LayoutDashboard size={16} />, label: "Dashboard", roles: PAGE_ROLES.dashboard },
+  { path: "/my-class", icon: <LayoutDashboard size={16} />, label: "My Class", roles: PAGE_ROLES.myClass },
+  { path: "/learners", icon: <Users size={16} />, label: "Learner Profiles", roles: PAGE_ROLES.learners },
+  { path: "/attendance", icon: <CalendarCheck size={16} />, label: "Mark Attendance", roles: PAGE_ROLES.attendance },
+  { path: "/alerts", icon: <Bell size={16} />, label: "Alerts", roles: PAGE_ROLES.alerts },
+  { path: "/referrals", icon: <ClipboardList size={16} />, label: "Referrals", roles: PAGE_ROLES.referrals },
+  { path: "/upload", icon: <Upload size={16} />, label: "Upload Data", roles: PAGE_ROLES.upload },
+  { path: "/reports", icon: <FileText size={16} />, label: "Reports", roles: PAGE_ROLES.reports },
+  { path: "/map", icon: <Map size={16} />, label: "Risk Map", roles: PAGE_ROLES.map },
+  { path: "/script-analysis", icon: <Brain size={16} />, label: "AI Script Analysis", roles: PAGE_ROLES.scriptAnalysis },
+  { path: "/users", icon: <UserCog size={16} />, label: "User Management", roles: PAGE_ROLES.users },
+  { path: "/audit-log", icon: <ScrollText size={16} />, label: "Audit Log", roles: PAGE_ROLES.auditLog },
+];
+
 export default function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
   const user = getCurrentUser();
-  const role = user?.role;
 
-  const getNavItems = () => {
-    if (role === ROLES.EDUCATOR)
-      return [
-        {
-          path: "/",
-          icon: <LayoutDashboard size={16} />,
-          label: "My Dashboard",
-        },
-        {
-          path: "/attendance",
-          icon: <CalendarCheck size={16} />,
-          label: "Mark Attendance",
-        },
-        { path: "/upload", icon: <Upload size={16} />, label: "Upload Data" },
-        { path: "/alerts", icon: <Bell size={16} />, label: "Alerts" },
-        {
-          path: "/referrals",
-          icon: <ClipboardList size={16} />,
-          label: "Referrals",
-        },
-        {
-          path: "/script-analysis",
-          icon: <Brain size={16} />,
-          label: "AI Script Analysis",
-        },
-      ];
-
-    if (role === ROLES.LST_MEMBER)
-      return [
-        { path: "/", icon: <ClipboardList size={16} />, label: "My Referrals" },
-        { path: "/alerts", icon: <Bell size={16} />, label: "Alerts" },
-      ];
-
-    if (role === ROLES.SCHOOL_ADMIN)
-      return [
-        { path: "/", icon: <LayoutDashboard size={16} />, label: "Dashboard" },
-        {
-          path: "/learners",
-          icon: <Users size={16} />,
-          label: "Learner Profiles",
-        },
-
-        { path: "/alerts", icon: <Bell size={16} />, label: "Alerts" },
-        { path: "/upload", icon: <Upload size={16} />, label: "Upload CSV" },
-        {
-          path: "/referrals",
-          icon: <ClipboardList size={16} />,
-          label: "Referrals",
-        },
-        { path: "/reports", icon: <FileText size={16} />, label: "Reports" },
-        { path: "/map", icon: <Map size={16} />, label: "Risk Map" },
-      ];
-
-    if (role === ROLES.SYSTEM_ADMIN)
-      return [
-        {
-          path: "/users",
-          icon: <UserCog size={16} />,
-          label: "User Management",
-        },
-        {
-          path: "/audit-log",
-          icon: <ScrollText size={16} />,
-          label: "Audit Log",
-        },
-      ];
-
-    return [];
-  };
-
-  const navItems = getNavItems();
+  const navItems = NAV_ITEMS.filter((item) => hasAnyRole(user, item.roles));
 
   const getRoleLabel = () => {
-    if (role === ROLES.EDUCATOR) return "Educator";
-    if (role === ROLES.SCHOOL_ADMIN) return "School Administrator";
-    if (role === ROLES.SYSTEM_ADMIN) return "System Administrator";
-    if (role === ROLES.LST_MEMBER) return "LST Member";
-    return role;
+    const roles = getUserRoles(user);
+    return roles.length ? roles.join(", ") : "No role assigned";
   };
 
   return (
