@@ -7,6 +7,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from django.db.models import Avg, Count
+from django.db import transaction
 from django.utils import timezone
 from django.http import HttpResponse
 from django.conf import settings
@@ -41,10 +42,17 @@ from .serializers import (
     StaffSerializer,
 )
 from .permissions import (
+    IsRegisterTeacher,
+    IsSubjectTeacher,
     IsGradeHead,
     IsSchoolClerk,
     IsWellnessOffice,
     IsSystemAdministrator,
+    HasRoleForMethod,
+    PROFILE_ROLES,
+    CAPTURE_ROLES,
+    ROSTER_ROLES,
+    scope_queryset,
 )
 import csv
 import io
@@ -204,24 +212,23 @@ class StaffListView(generics.ListAPIView):
         )
 
 
-class LearnerListCreateView(generics.ListCreateAPIView):
+class LearnerListCreateView(generics.ListAPIView):
+    # FR07, NFR17, NFR18: read only - learners enter through the FR04
+    # import, so POST is denied. Profile roles get full records within
+    # their scope; a Subject Teacher gets a roster of own classes. A
+    # learner reachable through both gets the full record.
     serializer_class = LearnerSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": PROFILE_ROLES + ROSTER_ROLES}
 
     def get_queryset(self):
-        queryset = Learner.objects.filter(is_active=True)
-        user = self.request.user
+        queryset = scope_queryset(
+            Learner.objects.filter(is_active=True),
+            self.request.user,
+            PROFILE_ROLES + ROSTER_ROLES,
+        )
         grade = self.request.query_params.get("grade")
         search = self.request.query_params.get("search")
-
-        if user.role == "Educator":
-            if user.assigned_grade and user.assigned_class_group:
-                queryset = queryset.filter(
-                    grade=user.assigned_grade, class_group=user.assigned_class_group
-                )
-            elif user.assigned_grade:
-                queryset = queryset.filter(grade=user.assigned_grade)
-            return queryset
 
         if grade:
             queryset = queryset.filter(grade=grade)
@@ -231,31 +238,59 @@ class LearnerListCreateView(generics.ListCreateAPIView):
             )
         return queryset
 
+    def get_serializer_context(self):
+        # The learners this user may see in full; every other learner in
+        # the list is reachable only through a roster role.
+        context = super().get_serializer_context()
+        context["full_learner_ids"] = set(
+            scope_queryset(
+                Learner.objects.all(), self.request.user, PROFILE_ROLES
+            ).values_list("id", flat=True)
+        )
+        return context
 
-class LearnerDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Learner.objects.all()
+
+class LearnerDetailView(generics.RetrieveAPIView):
+    # FR07, NFR17: read only. A learner outside the user's scope is a 404.
     serializer_class = LearnerSerializer
-    permission_classes = [IsAuthenticated]
-
-
-class AttendanceListCreateView(generics.ListCreateAPIView):
-    serializer_class = AttendanceRecordSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": PROFILE_ROLES}
 
     def get_queryset(self):
-        queryset = AttendanceRecord.objects.all()
+        return scope_queryset(Learner.objects.all(), self.request.user, PROFILE_ROLES)
+
+
+class AttendanceListCreateView(generics.ListAPIView):
+    # FR05, FR07: read only - attendance is captured through
+    # /attendance/mark/. A Subject Teacher reads own classes' attendance
+    # to correct a register.
+    serializer_class = AttendanceRecordSerializer
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": PROFILE_ROLES + ROSTER_ROLES}
+
+    def get_queryset(self):
+        queryset = scope_queryset(
+            AttendanceRecord.objects.all(),
+            self.request.user,
+            PROFILE_ROLES + ROSTER_ROLES,
+            prefix="learner__",
+        )
         learner_id = self.request.query_params.get("learner_id")
         if learner_id:
             queryset = queryset.filter(learner_id=learner_id)
         return queryset
 
 
-class MarkListCreateView(generics.ListCreateAPIView):
+class MarkListCreateView(generics.ListAPIView):
+    # FR07: read only - marks enter through the FR04 import.
     serializer_class = MarkRecordSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": PROFILE_ROLES}
 
     def get_queryset(self):
-        queryset = MarkRecord.objects.all()
+        queryset = scope_queryset(
+            MarkRecord.objects.all(), self.request.user, PROFILE_ROLES, prefix="learner__"
+        )
         learner_id = self.request.query_params.get("learner_id")
         if learner_id:
             queryset = queryset.filter(learner_id=learner_id)
@@ -263,33 +298,90 @@ class MarkListCreateView(generics.ListCreateAPIView):
 
 
 class IncidentListCreateView(generics.ListCreateAPIView):
+    # FR06: Register and Subject Teachers log incidents for learners in
+    # their own classes. FR07: profile roles read them within scope.
     serializer_class = IncidentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": PROFILE_ROLES, "POST": CAPTURE_ROLES}
 
     def get_queryset(self):
-        queryset = Incident.objects.all()
+        queryset = scope_queryset(
+            Incident.objects.all(), self.request.user, PROFILE_ROLES, prefix="learner__"
+        )
         learner_id = self.request.query_params.get("learner_id")
         if learner_id:
             queryset = queryset.filter(learner_id=learner_id)
         return queryset
 
+    def create(self, request, *args, **kwargs):
+        learner_id = request.data.get("learner")
+        if learner_id not in (None, ""):
+            bad_ids = _learner_ids_outside_capture_scope(request.user, [learner_id])
+            if bad_ids:
+                return Response(
+                    {
+                        "error": "Learner is not in your class or does not exist.",
+                        "invalid_learner_ids": bad_ids,
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        with transaction.atomic():
+            return super().create(request, *args, **kwargs)
 
-class IncidentDetailView(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Incident.objects.all()
+    def perform_create(self, serializer):
+        serializer.save(logged_by=self.request.user)
+
+
+class IncidentDetailView(generics.RetrieveAPIView):
+    # FR06, FR07: read only - an incident is logged once and not edited
+    # here. An incident outside the user's scope is a 404.
     serializer_class = IncidentSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": PROFILE_ROLES}
+
+    def get_queryset(self):
+        return scope_queryset(
+            Incident.objects.all(), self.request.user, PROFILE_ROLES, prefix="learner__"
+        )
 
 
 class RiskScoreListView(generics.ListAPIView):
+    # FR07, FR09: risk scores within the user's profile scope.
     serializer_class = RiskScoreSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [HasRoleForMethod]
+    method_roles = {"GET": PROFILE_ROLES}
 
     def get_queryset(self):
-        queryset = RiskScore.objects.all().order_by("-computed_date")
+        queryset = scope_queryset(
+            RiskScore.objects.all(), self.request.user, PROFILE_ROLES, prefix="learner__"
+        ).order_by("-computed_date")
         risk_level = self.request.query_params.get("risk_level")
         if risk_level:
             queryset = queryset.filter(risk_level=risk_level)
         return queryset
+
+
+def _learner_ids_outside_capture_scope(user, learner_ids):
+    """
+    FR05, FR06, NFR17 - returns the IDs in `learner_ids` that don't exist,
+    aren't active, or aren't in a class the user registers or teaches.
+    Empty list means every ID may be captured for.
+    """
+    allowed = set(
+        scope_queryset(
+            Learner.objects.filter(is_active=True), user, CAPTURE_ROLES
+        ).values_list("id", flat=True)
+    )
+    bad = []
+    for raw_id in learner_ids:
+        try:
+            learner_id = int(raw_id)
+        except (TypeError, ValueError):
+            bad.append(raw_id)
+            continue
+        if learner_id not in allowed:
+            bad.append(raw_id)
+    return bad
 
 
 class AlertListView(generics.ListAPIView):
@@ -312,25 +404,23 @@ class AlertListView(generics.ListAPIView):
 
 
 @api_view(["GET"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsRegisterTeacher])
 def educator_class_trends(request):
     """
     Aggregated attendance, mark, and incident data for the requesting
-    Educator's own assigned class — used to power the Educator Dashboard
-    charts. Returns empty series (not an error) if the educator isn't
-    assigned to a class yet, or has no records logged.
+    Register Teacher's own class(es) — used to power the Educator Dashboard
+    charts. FR07, NFR17: the classes come from the user's Register Teacher
+    UserRole rows, merged if there are several. Returns empty series (not
+    an error) if no class is in scope yet, or has no records logged.
     """
     user = request.user
-    if not (user.assigned_grade and user.assigned_class_group):
+    class_learners = scope_queryset(
+        Learner.objects.filter(is_active=True), user, (Role.REGISTER_TEACHER,)
+    )
+    if not class_learners.exists():
         return Response(
             {"attendance_trend": [], "mark_trend": [], "incident_breakdown": []}
         )
-
-    class_learners = Learner.objects.filter(
-        is_active=True,
-        grade=user.assigned_grade,
-        class_group=user.assigned_class_group,
-    )
 
     # Weekly attendance rate for the class, most recent 8 weeks.
     # Counting present vs total per ISO week manually (rather than a
@@ -605,8 +695,11 @@ def upload_csv(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsRegisterTeacher | IsSubjectTeacher])
 def mark_attendance(request):
+    # FR05, NFR17: Register and Subject Teachers capture attendance for
+    # their own classes only. If any learner is out of scope or doesn't
+    # exist, nothing is written and the bad IDs are returned.
     date = request.data.get("date")
     attendances = request.data.get("attendances", [])
 
@@ -616,19 +709,29 @@ def mark_attendance(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    bad_ids = _learner_ids_outside_capture_scope(
+        request.user, [item.get("learner_id") for item in attendances]
+    )
+    if bad_ids:
+        return Response(
+            {
+                "error": "Some learners are not in your classes or do not exist.",
+                "invalid_learner_ids": bad_ids,
+            },
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
     created = 0
     updated = 0
 
-    for item in attendances:
-        learner_id = item.get("learner_id")
-        is_present = item.get("is_present", True)
-        try:
-            learner = Learner.objects.get(id=learner_id)
+    with transaction.atomic():
+        for item in attendances:
+            learner = Learner.objects.get(id=item.get("learner_id"))
             obj, was_created = AttendanceRecord.objects.update_or_create(
                 learner=learner,
                 date=date,
                 defaults={
-                    "is_present": is_present,
+                    "is_present": item.get("is_present", True),
                     "recorded_by": request.user,
                 },
             )
@@ -636,15 +739,13 @@ def mark_attendance(request):
                 created += 1
             else:
                 updated += 1
-        except Learner.DoesNotExist:
-            continue
 
-    AuditLog.objects.create(
-        user=request.user,
-        action="Attendance_Marked",
-        target_type="AttendanceRecord",
-        ip_address=request.META.get("REMOTE_ADDR"),
-    )
+        AuditLog.objects.create(
+            user=request.user,
+            action="Attendance_Marked",
+            target_type="AttendanceRecord",
+            ip_address=request.META.get("REMOTE_ADDR"),
+        )
 
     # Check for performance decline after marking
     try:
@@ -666,12 +767,17 @@ def check_performance_decline():
     """
     Checks all learners for a 15% or more drop in average
     marks across consecutive assessments and creates alerts.
+    Returns counts only (no learner data), for the System Administrator's
+    /check-performance/ endpoint (NFR19).
     """
     from django.db.models import Avg
 
     learners = Learner.objects.filter(is_active=True)
+    learners_checked = 0
+    alerts_created = 0
 
     for learner in learners:
+        learners_checked += 1
         # Get marks ordered by date
         marks = learner.marks.order_by("assessment_date")
         if marks.count() < 2:
@@ -706,19 +812,26 @@ def check_performance_decline():
                         f"Average dropped from {first_avg:.1f}% to {last_avg:.1f}%."
                     ),
                 )
+                alerts_created += 1
                 print(
                     f"Performance alert created for {learner.first_name} {learner.surname}"
                 )
 
+    return {"learners_checked": learners_checked, "alerts_created": alerts_created}
+
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsSystemAdministrator])
 def run_performance_check(request):
+    # FR08, NFR19: the System Administrator may trigger the check but only
+    # ever gets counts back - no learner names or details, not even in an
+    # error message.
     try:
-        check_performance_decline()
-        return Response({"message": "Performance check complete"})
-    except Exception as e:
-        return Response({"error": str(e)}, status=500)
+        counts = check_performance_decline()
+        return Response(counts)
+    except Exception:
+        logger.exception("Performance check failed")
+        return Response({"error": "Performance check failed"}, status=500)
 
 
 @api_view(["GET"])

@@ -48,12 +48,30 @@ class UserCreateSerializer(serializers.ModelSerializer):
         user.save()
         return user
 
+class LearnerRosterSerializer(serializers.ModelSerializer):
+    # NFR17: a Subject Teacher sees a class roster only - enough to take a
+    # register or log an incident, none of the learner's profile data.
+    class Meta:
+        model = Learner
+        fields = ['id', 'first_name', 'surname', 'grade', 'class_group']
+
+
 class LearnerSerializer(serializers.ModelSerializer):
     risk_level = serializers.SerializerMethodField()
 
     class Meta:
         model = Learner
         fields = '__all__'
+
+    def to_representation(self, instance):
+        # NFR17, NFR18: when the view passes `full_learner_ids`, a learner
+        # outside that set is one the user reaches only through a roster
+        # role, so they get roster fields only - never more than a role
+        # allows.
+        full_ids = self.context.get('full_learner_ids')
+        if full_ids is not None and instance.id not in full_ids:
+            return LearnerRosterSerializer(instance, context=self.context).data
+        return super().to_representation(instance)
 
     def get_risk_level(self, obj):
         latest = obj.risk_scores.order_by('-computed_date').first()
@@ -75,6 +93,8 @@ class IncidentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Incident
         fields = '__all__'
+        # FR06: the server records who logged the incident, never the client.
+        read_only_fields = ['logged_by']
 
 class RiskScoreSerializer(serializers.ModelSerializer):
     learner_name = serializers.SerializerMethodField()

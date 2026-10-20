@@ -1,4 +1,6 @@
 import importlib
+from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -15,6 +17,11 @@ from .models import (
     Role,
     User,
     UserRole,
+    Learner,
+    AttendanceRecord,
+    MarkRecord,
+    Incident,
+    RiskScore,
     sync_user_roles_from_legacy,
     replace_user_roles_from_legacy,
 )
@@ -758,6 +765,379 @@ class CurrentUserRolesTests(APITestCase):
         self.assertEqual(response.data['role'], 'Educator')
 
 
+# ─── PHASE c2: learner data endpoints (FR05-FR09, NFR16-NFR19) ─────────
+
+ROSTER_KEYS = {'id', 'first_name', 'surname', 'grade', 'class_group'}
+
+
+def _make_learner(first_name, grade, class_group, is_active=True):
+    return Learner.objects.create(
+        first_name=first_name, surname='Test', date_of_birth=date(2010, 1, 1),
+        grade=grade, class_group=class_group, gender='Male',
+        home_town='Kimberley', distance_km=Decimal('2.50'),
+        guardian_name='Guardian', guardian_phone='0820000000',
+        enrolled_date=date(2024, 1, 15), is_active=is_active,
+    )
+
+
+def _make_scoped_user(username, scopes):
+    # create_user does not sync UserRole, so the user holds exactly the
+    # (role, grade_scope, class_scope) rows given here.
+    user = User.objects.create_user(
+        username=username, email=f'{username}@example.com',
+        password='testpass123', full_name=username, role='Educator',
+    )
+    for role_name, grade_scope, class_scope in scopes:
+        UserRole.objects.create(
+            user=user, role=Role.objects.get(name=role_name),
+            grade_scope=grade_scope, class_scope=class_scope,
+        )
+    return user
+
+
+class C2Fixture:
+    """
+    Learners in 8A, 8B and 9A (plus an inactive 8A learner), each with one
+    attendance record, mark, incident and risk score; and one user per
+    role: Register and Subject Teacher for 8A, Grade Head for grade 8,
+    School Clerk, Wellness Office, System Administrator, and no role.
+    """
+
+    def setUp(self):
+        self.l8a = _make_learner('Eight-A', 8, '8A')
+        self.l8b = _make_learner('Eight-B', 8, '8B')
+        self.l9a = _make_learner('Nine-A', 9, '9A')
+        self.l8a_inactive = _make_learner('Left', 8, '8A', is_active=False)
+
+        self.incidents = {}
+        for learner in (self.l8a, self.l8b, self.l9a):
+            AttendanceRecord.objects.create(
+                learner=learner, date=date(2026, 10, 1), is_present=True,
+            )
+            MarkRecord.objects.create(
+                learner=learner, subject='Maths', assessment_type='Test',
+                mark=Decimal('60'), max_mark=Decimal('100'), term=3,
+                assessment_date=date(2026, 9, 1),
+            )
+            self.incidents[learner.class_group] = Incident.objects.create(
+                learner=learner, incident_date=date(2026, 10, 1),
+                incident_type=f'Type-{learner.class_group}',
+                description='Test incident', severity='Low',
+            )
+            RiskScore.objects.create(
+                learner=learner, attendance_rate=Decimal('90'),
+                avg_mark=Decimal('60'), mark_trend=Decimal('0'),
+                incident_count=1, risk_score=Decimal('0.2000'),
+                risk_level='Low', top_factor='None',
+            )
+
+        self.users = {
+            'rt': _make_scoped_user('c2_rt', [(Role.REGISTER_TEACHER, 8, '8A')]),
+            'st': _make_scoped_user('c2_st', [(Role.SUBJECT_TEACHER, 8, '8A')]),
+            'gh': _make_scoped_user('c2_gh', [(Role.GRADE_HEAD, 8, None)]),
+            'sc': _make_scoped_user('c2_sc', [(Role.SCHOOL_CLERK, None, None)]),
+            'wo': _make_scoped_user('c2_wo', [(Role.WELLNESS_OFFICE, None, None)]),
+            'sa': _make_scoped_user('c2_sa', [(Role.SYSTEM_ADMINISTRATOR, None, None)]),
+            'none': _make_scoped_user('c2_none', []),
+        }
+
+    def _get_ids(self, user, url, key='id'):
+        self.client.force_authenticate(user=user)
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, status.HTTP_200_OK, url)
+        return {row[key] for row in response.data}
+
+    def _incident_payload(self, learner, **extra):
+        payload = {
+            'learner': learner.id, 'incident_date': '2026-10-02',
+            'incident_type': 'Disruption', 'description': 'Test',
+            'severity': 'Low',
+        }
+        payload.update(extra)
+        return payload
+
+
+class C2RoleMatrixTests(C2Fixture, APITestCase):
+    """
+    NFR16, NFR19 - every c2 endpoint and method against all six roles, a
+    user with no role and an anonymous caller. Scope is tested separately.
+    """
+
+    def _requests(self):
+        # (label, method, url, payload, roles allowed, success status)
+        return [
+            ('learner-list', 'get', '/api/learners/', None,
+             {'rt', 'st', 'gh', 'sc', 'wo'}, 200),
+            ('learner-detail', 'get', f'/api/learners/{self.l8a.id}/', None,
+             {'rt', 'gh', 'sc', 'wo'}, 200),
+            ('attendance-list', 'get', '/api/attendance/', None,
+             {'rt', 'st', 'gh', 'sc', 'wo'}, 200),
+            ('mark-list', 'get', '/api/marks/', None,
+             {'rt', 'gh', 'sc', 'wo'}, 200),
+            ('incident-list', 'get', '/api/incidents/', None,
+             {'rt', 'gh', 'sc', 'wo'}, 200),
+            ('incident-detail', 'get', f'/api/incidents/{self.incidents["8A"].id}/', None,
+             {'rt', 'gh', 'sc', 'wo'}, 200),
+            ('risk-score-list', 'get', '/api/risk-scores/', None,
+             {'rt', 'gh', 'sc', 'wo'}, 200),
+            ('educator-class-trends', 'get', '/api/educator/class-trends/', None,
+             {'rt'}, 200),
+            ('incident-list POST', 'post', '/api/incidents/',
+             self._incident_payload(self.l8a), {'rt', 'st'}, 201),
+            ('mark-attendance', 'post', '/api/attendance/mark/',
+             {'date': '2026-10-02',
+              'attendances': [{'learner_id': self.l8a.id, 'is_present': True}]},
+             {'rt', 'st'}, 200),
+            ('check-performance', 'post', '/api/check-performance/', {},
+             {'sa'}, 200),
+        ]
+
+    def test_each_role_gets_exactly_the_endpoints_it_is_allowed(self):
+        for label, method, url, payload, allowed, ok_status in self._requests():
+            for key, user in self.users.items():
+                self.client.force_authenticate(user=user)
+                response = getattr(self.client, method)(url, payload, format='json')
+                expected = ok_status if key in allowed else status.HTTP_403_FORBIDDEN
+                self.assertEqual(
+                    response.status_code, expected, f'{label} as {key}'
+                )
+
+    def test_anonymous_caller_gets_401_everywhere(self):
+        self.client.force_authenticate(user=None)
+        for label, method, url, payload, _, _ in self._requests():
+            response = getattr(self.client, method)(url, payload, format='json')
+            self.assertEqual(
+                response.status_code, status.HTTP_401_UNAUTHORIZED, label
+            )
+
+    def test_inactive_user_is_denied_even_with_a_matching_role(self):
+        user = _make_scoped_user('c2_inactive', [(Role.SCHOOL_CLERK, None, None)])
+        user.is_active = False
+        user.save()
+        self.client.force_authenticate(user=user)
+        self.assertEqual(
+            self.client.get('/api/learners/').status_code, status.HTTP_403_FORBIDDEN
+        )
+
+
+class C2WriteDeniedTests(C2Fixture, APITestCase):
+    """Locked decision: direct writes to learner data are denied for every role."""
+
+    def test_direct_writes_are_denied_for_every_role(self):
+        learner_url = f'/api/learners/{self.l8a.id}/'
+        incident_url = f'/api/incidents/{self.incidents["8A"].id}/'
+        writes = [
+            ('post', '/api/learners/', {'first_name': 'New'}),
+            ('put', learner_url, {'first_name': 'Changed'}),
+            ('patch', learner_url, {'first_name': 'Changed'}),
+            ('delete', learner_url, None),
+            ('post', '/api/attendance/',
+             {'learner': self.l8a.id, 'date': '2026-10-03', 'is_present': False}),
+            ('post', '/api/marks/', {'learner': self.l8a.id, 'mark': '10'}),
+            ('put', incident_url, {'description': 'Changed'}),
+            ('patch', incident_url, {'description': 'Changed'}),
+            ('delete', incident_url, None),
+        ]
+        counts_before = (
+            Learner.objects.count(), AttendanceRecord.objects.count(),
+            MarkRecord.objects.count(), Incident.objects.count(),
+        )
+        for method, url, payload in writes:
+            for key, user in self.users.items():
+                self.client.force_authenticate(user=user)
+                response = getattr(self.client, method)(url, payload, format='json')
+                self.assertIn(
+                    response.status_code,
+                    (status.HTTP_403_FORBIDDEN, status.HTTP_405_METHOD_NOT_ALLOWED),
+                    f'{method.upper()} {url} as {key}',
+                )
+        counts_after = (
+            Learner.objects.count(), AttendanceRecord.objects.count(),
+            MarkRecord.objects.count(), Incident.objects.count(),
+        )
+        self.assertEqual(counts_before, counts_after)
+        self.l8a.refresh_from_db()
+        self.assertEqual(self.l8a.first_name, 'Eight-A')
+        self.incidents['8A'].refresh_from_db()
+        self.assertEqual(self.incidents['8A'].description, 'Test incident')
+
+
+class C2ScopeTests(C2Fixture, APITestCase):
+    """NFR17, NFR18 - each role sees only its own class, grade or school."""
+
+    def test_register_teacher_sees_only_own_class(self):
+        rt = self.users['rt']
+        own = {self.l8a.id}
+        self.assertEqual(self._get_ids(rt, '/api/learners/'), own)
+        self.assertEqual(self._get_ids(rt, '/api/attendance/', 'learner'), own)
+        self.assertEqual(self._get_ids(rt, '/api/marks/', 'learner'), own)
+        self.assertEqual(self._get_ids(rt, '/api/incidents/', 'learner'), own)
+        self.assertEqual(self._get_ids(rt, '/api/risk-scores/', 'learner'), own)
+
+    def test_out_of_scope_detail_is_404(self):
+        self.client.force_authenticate(user=self.users['rt'])
+        self.assertEqual(
+            self.client.get(f'/api/learners/{self.l8a.id}/').status_code,
+            status.HTTP_200_OK,
+        )
+        self.assertEqual(
+            self.client.get(f'/api/learners/{self.l8b.id}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+        self.assertEqual(
+            self.client.get(f'/api/incidents/{self.incidents["8B"].id}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_grade_head_sees_own_grade(self):
+        gh = self.users['gh']
+        self.assertEqual(self._get_ids(gh, '/api/learners/'), {self.l8a.id, self.l8b.id})
+        self.assertEqual(
+            self._get_ids(gh, '/api/risk-scores/', 'learner'), {self.l8a.id, self.l8b.id}
+        )
+        self.client.force_authenticate(user=gh)
+        self.assertEqual(
+            self.client.get(f'/api/learners/{self.l9a.id}/').status_code,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_clerk_and_wellness_office_see_every_active_learner(self):
+        everyone = {self.l8a.id, self.l8b.id, self.l9a.id}
+        for key in ('sc', 'wo'):
+            self.assertEqual(self._get_ids(self.users[key], '/api/learners/'), everyone, key)
+            self.assertEqual(
+                self._get_ids(self.users[key], '/api/risk-scores/', 'learner'),
+                everyone, key,
+            )
+
+    def test_combined_roles_get_the_union_of_their_scopes(self):
+        user = _make_scoped_user('c2_rt_gh', [
+            (Role.REGISTER_TEACHER, 8, '8A'),
+            (Role.GRADE_HEAD, 9, None),
+        ])
+        self.assertEqual(self._get_ids(user, '/api/learners/'), {self.l8a.id, self.l9a.id})
+
+    def test_scoped_role_with_missing_scope_sees_nothing(self):
+        user = _make_scoped_user('c2_rt_noscope', [(Role.REGISTER_TEACHER, None, None)])
+        self.assertEqual(self._get_ids(user, '/api/learners/'), set())
+
+    def test_subject_teacher_gets_roster_fields_only(self):
+        st = self.users['st']
+        self.client.force_authenticate(user=st)
+        response = self.client.get('/api/learners/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual({row['id'] for row in response.data}, {self.l8a.id})
+        for row in response.data:
+            self.assertEqual(set(row.keys()), ROSTER_KEYS)
+        self.assertEqual(
+            self._get_ids(st, '/api/attendance/', 'learner'), {self.l8a.id}
+        )
+
+    def test_full_record_wins_over_roster_for_the_same_user(self):
+        user = _make_scoped_user('c2_rt_st', [
+            (Role.REGISTER_TEACHER, 8, '8A'),
+            (Role.SUBJECT_TEACHER, 8, '8B'),
+        ])
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/api/learners/')
+        rows = {row['id']: row for row in response.data}
+        self.assertEqual(set(rows), {self.l8a.id, self.l8b.id})
+        self.assertIn('guardian_phone', rows[self.l8a.id])
+        self.assertEqual(set(rows[self.l8b.id].keys()), ROSTER_KEYS)
+
+
+class C2CaptureTests(C2Fixture, APITestCase):
+    """FR05, FR06 - capture only for own classes, all or nothing."""
+
+    def test_mark_attendance_with_an_out_of_scope_learner_writes_nothing(self):
+        self.client.force_authenticate(user=self.users['rt'])
+        before = AttendanceRecord.objects.count()
+        response = self.client.post('/api/attendance/mark/', {
+            'date': '2026-10-05',
+            'attendances': [
+                {'learner_id': self.l8a.id, 'is_present': True},
+                {'learner_id': self.l8b.id, 'is_present': False},
+                {'learner_id': 999999, 'is_present': True},
+            ],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['invalid_learner_ids'], [self.l8b.id, 999999])
+        self.assertEqual(AttendanceRecord.objects.count(), before)
+
+    def test_mark_attendance_rejects_an_inactive_learner(self):
+        self.client.force_authenticate(user=self.users['rt'])
+        response = self.client.post('/api/attendance/mark/', {
+            'date': '2026-10-05',
+            'attendances': [{'learner_id': self.l8a_inactive.id, 'is_present': True}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['invalid_learner_ids'], [self.l8a_inactive.id])
+
+    def test_subject_teacher_marks_own_class(self):
+        st = self.users['st']
+        self.client.force_authenticate(user=st)
+        response = self.client.post('/api/attendance/mark/', {
+            'date': '2026-10-05',
+            'attendances': [{'learner_id': self.l8a.id, 'is_present': False}],
+        }, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        record = AttendanceRecord.objects.get(learner=self.l8a, date=date(2026, 10, 5))
+        self.assertFalse(record.is_present)
+        self.assertEqual(record.recorded_by, st)
+
+    def test_incident_for_an_out_of_scope_learner_is_rejected(self):
+        self.client.force_authenticate(user=self.users['rt'])
+        before = Incident.objects.count()
+        response = self.client.post(
+            '/api/incidents/', self._incident_payload(self.l8b), format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['invalid_learner_ids'], [self.l8b.id])
+        self.assertEqual(Incident.objects.count(), before)
+
+    def test_incident_logged_by_is_always_the_caller(self):
+        rt = self.users['rt']
+        self.client.force_authenticate(user=rt)
+        response = self.client.post(
+            '/api/incidents/',
+            self._incident_payload(self.l8a, logged_by=self.users['sc'].id),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Incident.objects.get(id=response.data['id']).logged_by, rt)
+
+    def test_check_performance_returns_counts_only(self):
+        self.client.force_authenticate(user=self.users['sa'])
+        response = self.client.post('/api/check-performance/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(set(response.data.keys()), {'learners_checked', 'alerts_created'})
+        self.assertEqual(response.data['learners_checked'], 3)
+
+
+class C2ClassTrendsTests(C2Fixture, APITestCase):
+    """FR07, NFR17 - the Register Teacher's class trends come from UserRole."""
+
+    def _incident_types(self, user):
+        self.client.force_authenticate(user=user)
+        response = self.client.get('/api/educator/class-trends/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return {row['type'] for row in response.data['incident_breakdown']}
+
+    def test_multiple_register_teacher_classes_are_merged(self):
+        user = _make_scoped_user('c2_rt_two', [
+            (Role.REGISTER_TEACHER, 8, '8A'),
+            (Role.REGISTER_TEACHER, 9, '9A'),
+        ])
+        self.assertEqual(self._incident_types(user), {'Type-8A', 'Type-9A'})
+
+    def test_scope_comes_from_user_role_not_legacy_assignment(self):
+        user = _make_scoped_user('c2_rt_legacy', [(Role.REGISTER_TEACHER, 8, '8A')])
+        user.assigned_grade = 8
+        user.assigned_class_group = '8B'
+        user.save()
+        self.assertEqual(self._incident_types(user), {'Type-8A'})
+
+
 # Open to all six roles by design, forever - not migrated later, never
 # expected to gain a role-specific permission class.
 OPEN_BY_DESIGN = {'login', 'token_refresh', 'current-user'}
@@ -770,13 +1150,6 @@ OPEN_BY_DESIGN = {'login', 'token_refresh', 'current-user'}
 # been removed.
 NOT_YET_MIGRATED = {
     'dashboard',
-    'learner-list',
-    'learner-detail',
-    'attendance-list',
-    'mark-list',
-    'incident-list',
-    'incident-detail',
-    'risk-score-list',
     'alert-list',
     'alert-read',
     'alert-read-all',
@@ -784,10 +1157,7 @@ NOT_YET_MIGRATED = {
     'referral-detail',
     'generate-report',
     'report-list',
-    'mark-attendance',
-    'check-performance',
     'analyse-script',
-    'educator-class-trends',
     'generate-script-pdf',
 }
 
