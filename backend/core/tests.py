@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 from django.apps import apps
 from django.contrib import admin
 from django.contrib.auth.models import AnonymousUser
+from django.core import mail
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
 from django.test import RequestFactory, TestCase
@@ -1664,6 +1665,80 @@ class MarksImportTests(C2Fixture, APITestCase):
         )
         self.assertEqual(data['errors'], [])
         self.assertEqual(data['imported'], 2)
+
+
+def _fake_model(level):
+    # Stands in for the Random Forest so a test chooses the predicted level.
+    import numpy as np
+    model = MagicMock()
+    model.classes_ = np.array(['High', 'Low', 'Medium'])
+    model.predict.return_value = np.array([level])
+    model.predict_proba.return_value = np.array([[0.6, 0.2, 0.2]])
+    model.feature_importances_ = np.array([0.4, 0.2, 0.1, 0.1, 0.1, 0.1])
+    return model
+
+
+class RiskAlertOnLevelChangeTests(C2Fixture, APITestCase):
+    """
+    FR10, NFR17 - predict_risk raises an alert and sends an email only when
+    the level becomes Medium or High from a different level (or from no
+    score), and only to active alert roles whose scope covers the learner.
+    The fixture gives every learner a Low score to start with.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.other_rt = _make_scoped_user('c7_rt_9a', [(Role.REGISTER_TEACHER, 9, '9A')])
+        self.inactive_rt = _make_scoped_user('c7_rt_off', [(Role.REGISTER_TEACHER, 8, '8A')])
+        self.inactive_rt.is_active = False
+        self.inactive_rt.save()
+
+    def _score(self, learner, level):
+        from .ml_engine import predict_risk
+        with patch('core.ml_engine.load_model', return_value=_fake_model(level)):
+            return predict_risk(learner)
+
+    def _risk_alerts(self, learner):
+        return Alert.objects.filter(learner=learner, alert_type='Risk_Level_Change').count()
+
+    def test_same_level_twice_alerts_and_emails_once(self):
+        self._score(self.l8a, 'High')
+        self._score(self.l8a, 'High')
+        self.assertEqual(self._risk_alerts(self.l8a), 1)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_change_from_low_to_high_creates_a_new_alert(self):
+        self._score(self.l8a, 'High')
+        self._score(self.l8a, 'Low')
+        self.assertEqual(self._risk_alerts(self.l8a), 1)
+        self._score(self.l8a, 'High')
+        self.assertEqual(self._risk_alerts(self.l8a), 2)
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_first_score_at_medium_alerts(self):
+        learner = _make_learner('New', 8, '8A')
+        self._score(learner, 'Medium')
+        self.assertEqual(self._risk_alerts(learner), 1)
+
+    def test_email_goes_only_to_users_in_scope(self):
+        self._score(self.l8a, 'High')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(
+            set(mail.outbox[0].to),
+            {self.users[k].email for k in ('rt', 'st', 'gh')},
+        )
+        self.assertNotIn(self.other_rt.email, mail.outbox[0].to)
+        self.assertNotIn(self.inactive_rt.email, mail.outbox[0].to)
+        body = mail.outbox[0].body
+        self.assertNotIn('Kimberley', body)
+        self.assertNotIn('km from school', body)
+
+    def test_educator_in_another_class_receives_nothing(self):
+        self._score(self.l9a, 'High')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, [self.other_rt.email])
+        for key in ('rt', 'st', 'gh'):
+            self.assertNotIn(self.users[key].email, mail.outbox[0].to, key)
 
 
 class AuditLogAdminReadOnlyTests(TestCase):

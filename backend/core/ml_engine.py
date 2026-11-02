@@ -233,6 +233,10 @@ def predict_risk(learner):
     top_feature_index = importances.argmax()
     top_factor = FEATURES[top_feature_index]
 
+    # FR10: the level before this run, read before the new score is saved
+    previous = RiskScore.objects.filter(learner=learner).order_by('-computed_date', '-id').first()
+    level_changed = previous is None or previous.risk_level != predicted_class
+
     # Save the risk score to the database
     RiskScore.objects.create(
         learner=learner,
@@ -245,8 +249,8 @@ def predict_risk(learner):
         top_factor=top_factor,
     )
 
-    # Create an alert if Medium or High risk
-    if predicted_class in ['Medium', 'High']:
+    # Create an alert if Medium or High risk and the level changed
+    if predicted_class in ['Medium', 'High'] and level_changed:
         Alert.objects.create(
             learner=learner,
             alert_type='Risk_Level_Change',
@@ -301,13 +305,20 @@ def send_risk_alert_email(learner, risk_level, risk_score, top_factor):
     """
     from django.core.mail import send_mail
     from django.conf import settings
-    from .models import User
+    from .models import Learner, User
+    from .permissions import ALERT_ROLES, scope_queryset
 
-    # Get all educators and school admins to notify
-    recipients = User.objects.filter(
-        role__in=['Educator', 'School_Admin'],
-        is_active=True
-    ).values_list('email', flat=True)
+    # FR10, NFR17: only active Register Teachers, Subject Teachers and
+    # Grade Heads whose UserRole scope covers this learner
+    candidates = User.objects.filter(
+        is_active=True,
+        userrole__role__name__in=ALERT_ROLES,
+    ).distinct()
+    this_learner = Learner.objects.filter(pk=learner.pk)
+    recipients = [
+        user.email for user in candidates
+        if user.email and scope_queryset(this_learner, user, ALERT_ROLES).exists()
+    ]
 
     if not recipients:
         print("No recipients found for email alert")
@@ -323,8 +334,6 @@ EarlySense has identified a learner who may be at risk of dropping out.
 LEARNER DETAILS:
 Name:        {learner.first_name} {learner.surname}
 Grade:       {learner.grade} — {learner.class_group}
-Home Town:   {learner.home_town}
-Distance:    {learner.distance_km} km from school
 
 RISK ASSESSMENT:
 Risk Level:  {risk_level}
