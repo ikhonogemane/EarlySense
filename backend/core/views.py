@@ -749,12 +749,33 @@ def upload_csv(request):
                 imported += 1
 
             elif upload_type == "marks":
+                mark = float(row.get("mark", 0))
+                max_mark = float(row.get("max_mark", 100))
+                if max_mark <= 0:
+                    errors.append(f"Row {row_num}: max_mark must be above 0")
+                    continue
+                if not 0 <= mark <= max_mark:
+                    errors.append(
+                        f"Row {row_num}: mark must be between 0 and {max_mark:g}"
+                    )
+                    continue
+                # FR04, NFR09: re-importing the same file adds no rows.
+                exists = MarkRecord.objects.filter(
+                    learner=learner,
+                    subject=row.get("subject"),
+                    assessment_type=row.get("assessment_type", "Test"),
+                    term=int(row.get("term", 1)),
+                    assessment_date=row.get("assessment_date"),
+                ).exists()
+                if exists:
+                    duplicates += 1
+                    continue
                 MarkRecord.objects.create(
                     learner=learner,
                     subject=row.get("subject"),
                     assessment_type=row.get("assessment_type", "Test"),
-                    mark=float(row.get("mark", 0)),
-                    max_mark=float(row.get("max_mark", 100)),
+                    mark=mark,
+                    max_mark=max_mark,
                     term=int(row.get("term", 1)),
                     assessment_date=row.get("assessment_date"),
                     recorded_by=request.user,

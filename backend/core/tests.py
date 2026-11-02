@@ -1596,6 +1596,66 @@ class ScriptAnalysisConsoleTests(C3Fixture, APITestCase):
         self.assertNotIn(self.l8a.first_name, prompt)
 
 
+@patch('core.views.check_performance_decline')
+@patch('core.ml_engine.predict_all_learners')
+class MarksImportTests(C2Fixture, APITestCase):
+    """
+    FR04, NFR09 - importing the same marks file twice adds no rows, and a
+    mark outside 0..max_mark (or a max_mark of 0) is rejected with its row
+    number. Scoring after import is mocked out.
+    """
+
+    HEADER = 'learner_id,subject,assessment_type,mark,max_mark,term,assessment_date\n'
+
+    def setUp(self):
+        super().setUp()
+        # upload_csv still checks the legacy role field for Educators, so
+        # the clerk gets the legacy role real clerks were mapped from.
+        self.users['sc'].role = 'School_Admin'
+        self.users['sc'].save()
+        for learner, sasams_id in ((self.l8a, 'S8A'), (self.l8b, 'S8B')):
+            learner.sasams_id = sasams_id
+            learner.save()
+
+    def _upload(self, body):
+        self.client.force_authenticate(user=self.users['sc'])
+        response = self.client.post('/api/upload-csv/', {
+            'file': SimpleUploadedFile('marks.csv', (self.HEADER + body).encode(), 'text/csv'),
+            'type': 'marks',
+        }, format='multipart')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        return response.data
+
+    def test_same_file_twice_imports_once(self, *_):
+        body = (
+            'S8A,English,Test,55,100,2,2026-06-01\n'
+            'S8B,English,Test,70,100,2,2026-06-01\n'
+        )
+        before = MarkRecord.objects.count()
+        first = self._upload(body)
+        self.assertEqual((first['imported'], first['duplicates']), (2, 0))
+        second = self._upload(body)
+        self.assertEqual((second['imported'], second['duplicates']), (0, 2))
+        self.assertEqual(second['errors'], [])
+        self.assertEqual(MarkRecord.objects.count(), before + 2)
+
+    def test_out_of_range_marks_are_rejected_with_row_number(self, *_):
+        before = MarkRecord.objects.count()
+        data = self._upload(
+            'S8A,English,Test,55,100,2,2026-06-01\n'
+            'S8B,English,Test,120,100,2,2026-06-01\n'
+            'S8B,History,Test,-1,50,2,2026-06-01\n'
+            'S8A,History,Test,10,0,2,2026-06-01\n'
+        )
+        self.assertEqual(data['imported'], 1)
+        self.assertEqual(len(data['errors']), 3)
+        self.assertTrue(data['errors'][0].startswith('Row 3:'))
+        self.assertTrue(data['errors'][1].startswith('Row 4:'))
+        self.assertTrue(data['errors'][2].startswith('Row 5:'))
+        self.assertIn('max_mark', data['errors'][2])
+        self.assertEqual(MarkRecord.objects.count(), before + 1)
+
+
 class AuditLogAdminReadOnlyTests(TestCase):
     """NFR21 - nobody, not even a superuser, can add, change or delete an audit row in the admin."""
 
