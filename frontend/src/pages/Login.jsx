@@ -22,8 +22,16 @@ export default function Login() {
     await login(username, password);
     refreshUser();
     navigate('/');
-  } catch {
-    setError('Invalid username or password. Please try again.');
+  } catch (err) {
+    // FR01, NFR15: show the server's message only for a locked account
+    // (worded in CustomTokenObtainPairSerializer); every other failure
+    // keeps the generic message.
+    const detail = err?.response?.data?.detail;
+    if (typeof detail === 'string' && detail.startsWith('This account is locked')) {
+      setError(detail);
+    } else {
+      setError('Invalid username or password. Please try again.');
+    }
   } finally {
     setLoading(false);
   }
