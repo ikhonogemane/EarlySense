@@ -5,7 +5,7 @@ from django.shortcuts import render
 from rest_framework import generics, status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny, SAFE_METHODS
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import AuthenticationFailed, ValidationError
 from rest_framework.response import Response
 from django.db.models import Avg, Count
 from django.db import transaction
@@ -65,6 +65,7 @@ from .permissions import (
 import csv
 import io
 import logging
+from datetime import timedelta
 import os
 import re
 
@@ -82,7 +83,43 @@ logger = logging.getLogger(__name__)
 
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
-        data = super().validate(attrs)
+        # FR01, NFR15: lock an account for LOGIN_LOCKOUT_MINUTES after
+        # LOGIN_MAX_FAILED_ATTEMPTS failed sign-ins in a row.
+        account = User.objects.filter(username=attrs.get(self.username_field)).first()
+        now = timezone.now()
+        if account and account.locked_until:
+            if account.locked_until > now:
+                seconds_left = int((account.locked_until - now).total_seconds())
+                minutes_left = max(1, -(-seconds_left // 60))
+                raise AuthenticationFailed(
+                    "This account is locked after too many failed sign-ins. "
+                    f"Try again in {minutes_left} minute(s).",
+                    "account_locked",
+                )
+            # The lock has passed, so counting starts again.
+            account.failed_logins = 0
+            account.locked_until = None
+            account.save(update_fields=["failed_logins", "locked_until"])
+
+        try:
+            data = super().validate(attrs)
+        except AuthenticationFailed:
+            if account:
+                User.objects.filter(pk=account.pk).update(
+                    failed_logins=F("failed_logins") + 1
+                )
+                account.refresh_from_db(fields=["failed_logins"])
+                if account.failed_logins >= settings.LOGIN_MAX_FAILED_ATTEMPTS:
+                    account.locked_until = now + timedelta(
+                        minutes=settings.LOGIN_LOCKOUT_MINUTES
+                    )
+                    account.save(update_fields=["locked_until"])
+            raise
+
+        if self.user.failed_logins or self.user.locked_until:
+            self.user.failed_logins = 0
+            self.user.locked_until = None
+            self.user.save(update_fields=["failed_logins", "locked_until"])
         # NFR21: record where the sign-in came from.
         request = self.context.get("request")
         AuditLog.objects.create(

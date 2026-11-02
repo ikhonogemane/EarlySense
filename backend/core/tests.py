@@ -1810,6 +1810,78 @@ class UserAuditTrailTests(APITestCase):
         self.assertEqual(self._actions(), ['User_Deleted'])
 
 
+class AccountLockoutTests(APITestCase):
+    """
+    FR01, NFR15 - 5 failed sign-ins in a row lock the account for 15
+    minutes, even against the right password; a success resets the count.
+    The clock is mocked.
+    """
+
+    def setUp(self):
+        from django.utils import timezone
+        self.start = timezone.now()
+        self.user = User.objects.create_user(
+            username='lock_user', email='lock_user@example.com',
+            password='testpass123', full_name='Lock User', role='Educator',
+        )
+
+    def _login(self, password, minutes_later=0):
+        from datetime import timedelta
+        at = self.start + timedelta(minutes=minutes_later)
+        with patch('django.utils.timezone.now', return_value=at):
+            return self.client.post(
+                '/api/auth/login/',
+                {'username': 'lock_user', 'password': password},
+                format='json',
+            )
+
+    def _fail(self, times):
+        for _ in range(times):
+            self.assertEqual(self._login('wrong').status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_five_failures_lock_the_account(self):
+        from datetime import timedelta
+        self._fail(4)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.failed_logins, 4)
+        self.assertIsNone(self.user.locked_until)
+        self._fail(1)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.locked_until, self.start + timedelta(minutes=15))
+
+    def test_correct_password_during_lock_is_refused(self):
+        self._fail(5)
+        response = self._login('testpass123', minutes_later=10)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertIn('locked', str(response.data['detail']))
+        self.assertIn('5 minute(s)', str(response.data['detail']))
+        self.assertFalse(AuditLog.objects.filter(action='Login', user=self.user).exists())
+
+    def test_sign_in_works_after_lock_passes(self):
+        self._fail(5)
+        response = self._login('testpass123', minutes_later=16)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.failed_logins, 0)
+        self.assertIsNone(self.user.locked_until)
+
+    def test_success_resets_the_counter(self):
+        self._fail(3)
+        self.assertEqual(self._login('testpass123').status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.failed_logins, 0)
+        # Four more failures do not lock, because the count started again.
+        self._fail(4)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.locked_until)
+
+    def test_unknown_username_fails_normally(self):
+        response = self.client.post(
+            '/api/auth/login/', {'username': 'nobody', 'password': 'x'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
 class AuditLogAdminReadOnlyTests(TestCase):
     """NFR21 - nobody, not even a superuser, can add, change or delete an audit row in the admin."""
 

@@ -108,6 +108,10 @@ CORS_ALLOWED_ORIGINS = [
 
 AUTH_USER_MODEL = 'core.User'
 
+# ─── ACCOUNT LOCKOUT (FR01, NFR15) ───────────────────────
+LOGIN_MAX_FAILED_ATTEMPTS = int(os.getenv('LOGIN_MAX_FAILED_ATTEMPTS', '5'))
+LOGIN_LOCKOUT_MINUTES = int(os.getenv('LOGIN_LOCKOUT_MINUTES', '15'))
+
 # ─── EMAIL SETTINGS ──────────────────────────────────────
 EMAIL_BACKEND      = 'django.core.mail.backends.smtp.EmailBackend'
 EMAIL_HOST         = os.getenv('EMAIL_HOST')
