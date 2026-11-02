@@ -83,12 +83,14 @@ logger = logging.getLogger(__name__)
 class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
     def validate(self, attrs):
         data = super().validate(attrs)
+        # NFR21: record where the sign-in came from.
+        request = self.context.get("request")
         AuditLog.objects.create(
             user=self.user,
             action="Login",
             target_type="User",
             target_id=self.user.id,
-            ip_address=None,
+            ip_address=request.META.get("REMOTE_ADDR") if request else None,
         )
         return data
 
@@ -184,17 +186,44 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         old_role = serializer.instance.role
         old_grade = serializer.instance.assigned_grade
         old_class = serializer.instance.assigned_class_group
+        was_active = serializer.instance.is_active
         user = serializer.save()
         # FR02, NFR17, NFR18: if the legacy role (or its scope) changed,
         # replace this user's UserRole set so it never goes stale - e.g.
         # Educator -> School_Admin must remove the Register Teacher/Subject
         # Teacher rows, not just add a School Clerk row alongside them.
-        if (
+        role_changed = (
             user.role != old_role
             or user.assigned_grade != old_grade
             or user.assigned_class_group != old_class
-        ):
+        )
+        if role_changed:
             replace_user_roles_from_legacy(user)
+        # NFR21: one audit row per update.
+        if was_active and not user.is_active:
+            action = "User_Deactivated"
+        elif role_changed:
+            action = "User_Role_Changed"
+        else:
+            action = "User_Updated"
+        AuditLog.objects.create(
+            user=self.request.user,
+            action=action,
+            target_type="User",
+            target_id=user.id,
+            ip_address=self.request.META.get("REMOTE_ADDR"),
+        )
+
+    def perform_destroy(self, instance):
+        # NFR21: the row is written before the delete, so target_id is kept.
+        AuditLog.objects.create(
+            user=self.request.user,
+            action="User_Deleted",
+            target_type="User",
+            target_id=instance.id,
+            ip_address=self.request.META.get("REMOTE_ADDR"),
+        )
+        instance.delete()
 
 
 class StaffListView(generics.ListAPIView):

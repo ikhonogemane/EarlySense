@@ -1747,6 +1747,69 @@ class RiskAlertOnLevelChangeTests(C2Fixture, APITestCase):
             self.assertNotIn(self.users[key].email, mail.outbox[0].to, key)
 
 
+class UserAuditTrailTests(APITestCase):
+    """
+    NFR21 - a sign-in records the caller's IP address, and every user
+    update, deactivation or delete by the System Administrator writes an
+    audit row.
+    """
+
+    def setUp(self):
+        self.admin = User.objects.create_user(
+            username='audit_admin', email='audit_admin@example.com',
+            password='testpass123', full_name='Audit Admin', role='System_Admin',
+        )
+        sync_user_roles_from_legacy(self.admin)
+        self.teacher = User.objects.create_user(
+            username='audit_teacher', email='audit_teacher@example.com',
+            password='testpass123', full_name='Audit Teacher', role='Educator',
+        )
+        sync_user_roles_from_legacy(self.teacher)
+        self.url = f'/api/users/{self.teacher.id}/'
+
+    def _actions(self):
+        return list(
+            AuditLog.objects.filter(target_type='User', target_id=self.teacher.id)
+            .exclude(action='Login').values_list('action', flat=True)
+        )
+
+    def test_login_records_ip_address(self):
+        response = self.client.post(
+            '/api/auth/login/',
+            {'username': 'audit_teacher', 'password': 'testpass123'},
+            format='json', REMOTE_ADDR='10.0.0.7',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        log = AuditLog.objects.get(action='Login', user=self.teacher)
+        self.assertEqual(log.ip_address, '10.0.0.7')
+
+    def test_role_change_writes_user_role_changed(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.patch(self.url, {'role': 'LST_Member'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._actions(), ['User_Role_Changed'])
+        self.assertEqual(AuditLog.objects.get(action='User_Role_Changed').user, self.admin)
+
+    def test_plain_update_writes_user_updated(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.patch(self.url, {'full_name': 'Renamed'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._actions(), ['User_Updated'])
+
+    def test_deactivation_writes_user_deactivated(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.patch(self.url, {'is_active': False}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._actions(), ['User_Deactivated'])
+
+    def test_delete_writes_user_deleted(self):
+        self.client.force_authenticate(user=self.admin)
+        response = self.client.delete(self.url)
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(User.objects.filter(id=self.teacher.id).exists())
+        self.assertEqual(self._actions(), ['User_Deleted'])
+
+
 class AuditLogAdminReadOnlyTests(TestCase):
     """NFR21 - nobody, not even a superuser, can add, change or delete an audit row in the admin."""
 
