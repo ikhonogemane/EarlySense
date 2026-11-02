@@ -469,6 +469,11 @@ export default function EducatorDashboard() {
               />
 
               <label style={styles.label}>Description</label>
+              <div style={styles.safetyNotice}>
+                Do not type details about a learner who has attempted or
+                talked about suicide. Tell the Wellness Office in person
+                instead.
+              </div>
               <textarea
                 style={styles.textarea}
                 placeholder="Describe what happened..."
@@ -756,6 +761,15 @@ const styles = {
     boxSizing: "border-box",
     height: "80px",
     resize: "none",
+  },
+  safetyNotice: {
+    background: "#fffbeb",
+    border: "1px solid #fde68a",
+    color: "#d97706",
+    borderRadius: "8px",
+    padding: "8px 12px",
+    fontSize: "12px",
+    marginBottom: "8px",
   },
   btnPrimary: {
     background: "#dc2626",
