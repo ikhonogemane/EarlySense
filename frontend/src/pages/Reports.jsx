@@ -64,7 +64,7 @@ const handleGenerate = async (fmt) => {
       icon: <AlertOctagon size={28} color="#dc2626" />,
       iconBg: "#fef2f2",
       title: "At-Risk Learner Report",
-      desc: "Full list of High and Medium risk learners with scores and current intervention status.",
+      desc: "Full list of High and Medium risk learners with risk scores, attendance, average marks and incidents.",
     },
     {
       id: "attendance",
