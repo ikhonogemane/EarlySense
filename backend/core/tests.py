@@ -1732,6 +1732,12 @@ class RiskAlertOnLevelChangeTests(C2Fixture, APITestCase):
         body = mail.outbox[0].body
         self.assertNotIn('Kimberley', body)
         self.assertNotIn('km from school', body)
+        # FR07, FR08: top_factor is the model's overall top feature.
+        self.assertIn('Most influential signal overall:', body)
+        self.assertIn(
+            'Most influential signal overall:',
+            Alert.objects.get(learner=self.l8a, alert_type='Risk_Level_Change').message,
+        )
 
     def test_educator_in_another_class_receives_nothing(self):
         self._score(self.l9a, 'High')

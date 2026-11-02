@@ -257,7 +257,7 @@ def predict_risk(learner):
             message=(
                 f'{learner.first_name} {learner.surname} has been classified as '
                 f'{predicted_class} Risk (score: {risk_score:.0%}). '
-                f'Primary factor: {top_factor.replace("_", " ").title()}.'
+                f'Most influential signal overall: {top_factor.replace("_", " ").title()}.'
             )
         )
         # Send email notification
@@ -338,7 +338,7 @@ Grade:       {learner.grade} — {learner.class_group}
 RISK ASSESSMENT:
 Risk Level:  {risk_level}
 Risk Score:  {risk_score:.0%}
-Top Factor:  {top_factor.replace('_', ' ').title()}
+Most influential signal overall:  {top_factor.replace('_', ' ').title()}
 
 RECOMMENDED ACTION:
 {"Immediate intervention required. Please create a referral to the Learner Support Team." if risk_level == "High" else "Please monitor this learner closely and consider a referral if the situation does not improve."}
