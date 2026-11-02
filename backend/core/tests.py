@@ -1,5 +1,7 @@
 import importlib
+import importlib.util
 import io
+import os
 from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
@@ -1613,6 +1615,41 @@ class AuditLogAdminReadOnlyTests(TestCase):
         self.assertFalse(model_admin.has_change_permission(request, log))
         self.assertFalse(model_admin.has_delete_permission(request))
         self.assertFalse(model_admin.has_delete_permission(request, log))
+
+
+class SafeSettingsTests(TestCase):
+    """
+    NFR20, NFR25 - by default DEBUG is off, ALLOWED_HOSTS has no wildcard
+    and CORS is limited to the listed origins. settings.py is loaded fresh
+    with those variables unset and .env not read, so only the defaults count.
+    """
+
+    def _load_default_settings(self):
+        from django.conf import settings as live_settings
+        path = os.path.join(live_settings.BASE_DIR, 'backend', 'settings.py')
+        spec = importlib.util.spec_from_file_location('settings_defaults', path)
+        module = importlib.util.module_from_spec(spec)
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('ALLOWED_HOSTS', 'CORS_ALLOWED_ORIGINS', 'DEBUG')}
+        with patch.dict(os.environ, env, clear=True), patch('dotenv.load_dotenv'):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_defaults_are_safe(self):
+        defaults = self._load_default_settings()
+        self.assertFalse(defaults.DEBUG)
+        self.assertNotIn('*', defaults.ALLOWED_HOSTS)
+        self.assertEqual(defaults.ALLOWED_HOSTS, ['localhost', '127.0.0.1'])
+        self.assertIsNot(getattr(defaults, 'CORS_ALLOW_ALL_ORIGINS', False), True)
+        self.assertEqual(
+            defaults.CORS_ALLOWED_ORIGINS,
+            ['http://localhost:5173', 'http://127.0.0.1:5173'],
+        )
+
+    def test_live_settings_have_no_wildcards(self):
+        from django.conf import settings as live_settings
+        self.assertNotIn('*', live_settings.ALLOWED_HOSTS)
+        self.assertIsNot(getattr(live_settings, 'CORS_ALLOW_ALL_ORIGINS', False), True)
 
 
 # Open to all six roles by design, forever - not migrated later, never
