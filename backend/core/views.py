@@ -1546,7 +1546,7 @@ def analyse_script(request):
     prompt = f"""You are an experienced educational psychologist and subject specialist helping a South African high school teacher understand exactly how a learner performed on an assessment — whether that performance was strong, weak, or mixed.
 
 LEARNER CONTEXT:
-- Name: {learner.first_name} {learner.surname}
+- Name: the learner
 - Grade: {learner.grade} — {learner.class_group}
 - Subject: {subject}
 - Assessment: {assessment}
@@ -1702,7 +1702,6 @@ Do not add a signature, author name, job title, or date at the end of the report
             "subject": subject,
             "assessment": assessment,
             "analysis": analysis,
-            'debug_transcript': script_text,  # TEMPORARY — remove once verified
         }
     )
     

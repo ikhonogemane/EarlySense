@@ -1502,7 +1502,8 @@ class C3ScriptAnalysisScopeTests(C3Fixture, APITestCase):
 class ScriptAnalysisConsoleTests(C3Fixture, APITestCase):
     """
     NFR21, NFR23 - analyse_script writes no memo text, handwriting
-    transcript or learner name to the console. Both AI calls are mocked.
+    transcript or learner name to the console, returns no debug
+    transcript, and sends no learner name to Groq. Both AI calls are mocked.
     """
 
     MEMO = 'MEMO-SECRET-Q1-ANSWER-42'
@@ -1536,6 +1537,9 @@ class ScriptAnalysisConsoleTests(C3Fixture, APITestCase):
         self.assertNotIn(self.MEMO, printed)
         self.assertNotIn(self.TRANSCRIPT, printed)
         self.assertNotIn(self.l8a.first_name, printed)
+        self.assertNotIn('debug_transcript', response.data)
+        prompt = groq_client.chat.completions.create.call_args.kwargs['messages'][0]['content']
+        self.assertNotIn(self.l8a.first_name, prompt)
 
 
 # Open to all six roles by design, forever - not migrated later, never
