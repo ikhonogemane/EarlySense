@@ -289,7 +289,6 @@ def predict_all_learners():
             'learner': str(learner),
             **result
         })
-        print(f"Scored: {learner} → {result['risk_level']} ({result['risk_score']:.0%})")
 
     print(f"\nCompleted scoring for {len(results)} learners")
     return results
@@ -353,7 +352,7 @@ This email was sent by EarlySense. Do not reply to this email.
             recipient_list=list(recipients),
             fail_silently=False,
         )
-        print(f"Email alert sent for {learner.first_name} {learner.surname}")
+        print(f"Email alert sent to {len(recipients)} recipient(s)")
         return True
     except Exception as e:
         print(f"Email sending failed: {e}")

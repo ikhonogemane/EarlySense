@@ -913,9 +913,6 @@ def check_performance_decline():
                     ),
                 )
                 alerts_created += 1
-                print(
-                    f"Performance alert created for {learner.first_name} {learner.surname}"
-                )
 
     return {"learners_checked": learners_checked, "alerts_created": alerts_created}
 
@@ -1507,11 +1504,6 @@ def analyse_script(request):
     qpaper_text = extract_pdf_text(qpaper_file)
     memo_text   = extract_pdf_text(memo_file)
 
-    print('\n' + '=' * 60)
-    print('MEMO TEXT (as extracted, before analysis):')
-    print('=' * 60)
-    print(memo_text)
-    print('=' * 60 + '\n')
     # The learner's script is handwritten, so it goes through vision-based
     # transcription rather than embedded-text extraction (which would
     # silently return nothing useful on a scanned handwritten page).
@@ -1541,17 +1533,6 @@ def analyse_script(request):
             },
             status=502,
         )
-    
-    # ── TEMPORARY DEBUG ──────────────────────────────────────────────
-    # Prints exactly what Gemini read off the handwritten pages, before
-    # it goes anywhere near the analysis prompt. Remove once we've
-    # confirmed transcription quality is solid.
-    print('\n' + '=' * 60)
-    print('HANDWRITING TRANSCRIPT (raw, before analysis):')
-    print('=' * 60)
-    print(script_text)
-    print('=' * 60 + '\n')
-    # ─────────────────────────────────────────────────────────────────
 
     # Get learner context
     attendance_count = learner.attendance.count()

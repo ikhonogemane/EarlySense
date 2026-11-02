@@ -1,8 +1,10 @@
 import importlib
+import io
+from contextlib import redirect_stdout
 from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.apps import apps
 from django.contrib.auth.models import AnonymousUser
@@ -1495,6 +1497,45 @@ class C3ScriptAnalysisScopeTests(C3Fixture, APITestCase):
             'question_paper': SimpleUploadedFile('qp.pdf', b'%PDF-1.4', 'application/pdf'),
         }, format='multipart')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ScriptAnalysisConsoleTests(C3Fixture, APITestCase):
+    """
+    NFR21, NFR23 - analyse_script writes no memo text, handwriting
+    transcript or learner name to the console. Both AI calls are mocked.
+    """
+
+    MEMO = 'MEMO-SECRET-Q1-ANSWER-42'
+    TRANSCRIPT = 'TRANSCRIPT-SECRET-LEARNER-WROTE-41'
+
+    def test_memo_transcript_and_name_are_not_printed(self):
+        groq_response = MagicMock()
+        groq_response.choices[0].finish_reason = 'stop'
+        groq_response.choices[0].message.content = 'Analysis report'
+        groq_client = MagicMock()
+        groq_client.chat.completions.create.return_value = groq_response
+
+        self.client.force_authenticate(user=self.users['st'])
+        out = io.StringIO()
+        with patch('core.views.extract_pdf_text', side_effect=['Question paper', self.MEMO]), \
+                patch('core.views.transcribe_handwritten_script', return_value=self.TRANSCRIPT), \
+                patch('groq.Groq', return_value=groq_client), \
+                redirect_stdout(out):
+            response = self.client.post('/api/analyse-script/', {
+                'learner_id': self.l8a.id,
+                'subject': 'Maths',
+                'assessment_name': 'Test 1',
+                'script': SimpleUploadedFile('script.pdf', b'%PDF-1.4', 'application/pdf'),
+                'memo': SimpleUploadedFile('memo.pdf', b'%PDF-1.4', 'application/pdf'),
+                'question_paper': SimpleUploadedFile('qp.pdf', b'%PDF-1.4', 'application/pdf'),
+            }, format='multipart')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        groq_client.chat.completions.create.assert_called_once()
+        printed = out.getvalue()
+        self.assertNotIn(self.MEMO, printed)
+        self.assertNotIn(self.TRANSCRIPT, printed)
+        self.assertNotIn(self.l8a.first_name, printed)
 
 
 # Open to all six roles by design, forever - not migrated later, never
