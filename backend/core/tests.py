@@ -1485,6 +1485,55 @@ class C3ReportTests(C3Fixture, APITestCase):
         self.assertEqual(self._get_ids(self.users['gh'], '/api/reports/'), set())
 
 
+class ReportFormatAndHistoryTests(C3Fixture, APITestCase):
+    """
+    FR17, NFR32 - the report format comes from file_format (format is a
+    fallback), only pdf and csv are allowed, and every generated report
+    leaves a Report row in the user's own history.
+    """
+
+    def _generate(self, user, query):
+        self.client.force_authenticate(user=user)
+        return self.client.get(f'/api/reports/generate/?{query}')
+
+    def test_csv_request_returns_csv(self):
+        response = self._generate(self.users['gh'], 'type=at_risk&file_format=csv')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response['Content-Type'].startswith('text/csv'))
+        self.assertIn('earlysense_at_risk_report.csv', response['Content-Disposition'])
+
+    def test_pdf_request_returns_pdf(self):
+        response = self._generate(self.users['gh'], 'type=at_risk&file_format=pdf')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+
+    def test_unknown_format_is_400_and_records_nothing(self):
+        before = Report.objects.count()
+        response = self._generate(self.users['gh'], 'type=at_risk&file_format=docx')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Report.objects.count(), before)
+
+    def test_generated_report_is_recorded_and_listed(self):
+        gh = self.users['gh']
+        response = self._generate(gh, 'type=all&file_format=csv&grade=8')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        report = Report.objects.get(generated_by=gh)
+        self.assertEqual(report.report_type, 'all')
+        self.assertEqual(report.parameters, {'type': 'all', 'format': 'csv', 'grade': '8'})
+        self.assertEqual(report.file_path, '')
+        self.assertGreaterEqual(report.file_size_kb, 1)
+        self.assertEqual(self._get_ids(gh, '/api/reports/'), {report.id})
+
+    def test_another_users_reports_are_not_listed(self):
+        self._generate(self.users['gh'], 'type=at_risk&file_format=pdf')
+        gh_ids = set(
+            Report.objects.filter(generated_by=self.users['gh']).values_list('id', flat=True)
+        )
+        rt_ids = self._get_ids(self.users['rt'], '/api/reports/')
+        self.assertEqual(rt_ids, {self.reports['rt'].id})
+        self.assertFalse(gh_ids & rt_ids)
+
+
 class C3ScriptAnalysisScopeTests(C3Fixture, APITestCase):
     def test_out_of_scope_learner_is_404_before_any_analysis(self):
         self.client.force_authenticate(user=self.users['st'])

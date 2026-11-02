@@ -1166,6 +1166,18 @@ def generate_report(request):
     return response
 
 
+def _record_report(request, report_type, file_format, grade_filter, response):
+    # FR17, NFR32: keep a history row for every generated report. The file
+    # is streamed, not stored, so file_path stays empty.
+    Report.objects.create(
+        generated_by=request.user,
+        report_type=report_type,
+        parameters={"type": report_type, "format": file_format, "grade": grade_filter},
+        file_path="",
+        file_size_kb=(len(response.content) + 1023) // 1024,
+    )
+
+
 @api_view(["GET"])
 @permission_classes([IsRegisterTeacher | IsGradeHead | IsSchoolClerk | IsWellnessOffice])
 def run_generate_report(request):
@@ -1185,7 +1197,15 @@ def run_generate_report(request):
     )
 
     report_type = request.query_params.get("type", "at_risk")
-    file_format = request.query_params.get("format", "pdf")
+    # The frontend sends file_format; format is kept as a fallback.
+    file_format = request.query_params.get("file_format") or request.query_params.get(
+        "format", "pdf"
+    )
+    if file_format not in ("pdf", "csv"):
+        return Response(
+            {"error": "file_format must be pdf or csv"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
     grade_filter = request.query_params.get("grade", "")
     learners = scope_queryset(
         Learner.objects.filter(is_active=True), request.user, REPORT_ROLES
@@ -1229,7 +1249,7 @@ def run_generate_report(request):
     if file_format == "csv":
         response = HttpResponse(content_type="text/csv")
         response["Content-Disposition"] = (
-            f'attachment; filename="earlysense_{file_format}_report.csv"'
+            f'attachment; filename="earlysense_{report_type}_report.csv"'
         )
         writer = csv.writer(response)
         writer.writerow(
@@ -1259,6 +1279,7 @@ def run_generate_report(request):
                     row["risk_score"],
                 ]
             )
+        _record_report(request, report_type, file_format, grade_filter, response)
         return response
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -1389,6 +1410,7 @@ def run_generate_report(request):
     response["Content-Disposition"] = (
         f'attachment; filename="earlysense_{report_type}_report.pdf"'
     )
+    _record_report(request, report_type, file_format, grade_filter, response)
     return response
 
 
