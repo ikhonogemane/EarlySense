@@ -715,24 +715,6 @@ def upload_csv(request):
                 )
                 continue
 
-            learner = Learner.objects.filter(sasams_id=row.get("learner_id")).first()
-            if not learner:
-                errors.append(
-                    f'Row {row_num}: Learner {row.get("learner_id")} not found'
-                )
-                continue
-
-            # Educators can only upload for their assigned class
-            if request.user.role == "Educator":
-                if (
-                    learner.grade != request.user.assigned_grade
-                    or learner.class_group != request.user.assigned_class_group
-                ):
-                    errors.append(
-                        f'Row {row_num}: Learner {row.get("learner_id")} is not in your assigned class'
-                    )
-                    continue
-
             if upload_type == "attendance":
                 exists = AttendanceRecord.objects.filter(
                     learner=learner, date=row.get("date")

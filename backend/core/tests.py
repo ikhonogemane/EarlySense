@@ -1609,10 +1609,6 @@ class MarksImportTests(C2Fixture, APITestCase):
 
     def setUp(self):
         super().setUp()
-        # upload_csv still checks the legacy role field for Educators, so
-        # the clerk gets the legacy role real clerks were mapped from.
-        self.users['sc'].role = 'School_Admin'
-        self.users['sc'].save()
         for learner, sasams_id in ((self.l8a, 'S8A'), (self.l8b, 'S8B')):
             learner.sasams_id = sasams_id
             learner.save()
@@ -1654,6 +1650,20 @@ class MarksImportTests(C2Fixture, APITestCase):
         self.assertTrue(data['errors'][2].startswith('Row 5:'))
         self.assertIn('max_mark', data['errors'][2])
         self.assertEqual(MarkRecord.objects.count(), before + 1)
+
+    def test_school_clerk_with_legacy_educator_role_can_import(self, *_):
+        # FR04, NFR17: access comes from UserRole, not the legacy role field.
+        clerk = self.users['sc']
+        clerk.role = 'Educator'
+        clerk.assigned_grade = 9
+        clerk.assigned_class_group = '9A'
+        clerk.save()
+        data = self._upload(
+            'S8A,Life Sciences,Test,40,50,2,2026-06-02\n'
+            'S8B,Life Sciences,Test,45,50,2,2026-06-02\n'
+        )
+        self.assertEqual(data['errors'], [])
+        self.assertEqual(data['imported'], 2)
 
 
 class AuditLogAdminReadOnlyTests(TestCase):
