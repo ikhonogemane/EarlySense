@@ -7,16 +7,19 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.apps import apps
+from django.contrib import admin
 from django.contrib.auth.models import AnonymousUser
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import IntegrityError
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.test import APITestCase
 
 from . import urls as core_urls
+from .admin import AuditLogAdmin
 from .models import (
+    AuditLog,
     Role,
     User,
     UserRole,
@@ -1589,6 +1592,27 @@ class ScriptAnalysisConsoleTests(C3Fixture, APITestCase):
         self.assertNotIn('debug_transcript', response.data)
         prompt = groq_client.chat.completions.create.call_args.kwargs['messages'][0]['content']
         self.assertNotIn(self.l8a.first_name, prompt)
+
+
+class AuditLogAdminReadOnlyTests(TestCase):
+    """NFR21 - nobody, not even a superuser, can add, change or delete an audit row in the admin."""
+
+    def test_superuser_cannot_add_change_or_delete(self):
+        superuser = User.objects.create_superuser(
+            username='admin_ro', email='admin_ro@example.com',
+            password='testpass123', full_name='Admin RO',
+        )
+        request = RequestFactory().get('/admin/core/auditlog/')
+        request.user = superuser
+        log = AuditLog.objects.create(user=superuser, action='Login')
+
+        self.assertIsInstance(admin.site._registry[AuditLog], AuditLogAdmin)
+        model_admin = AuditLogAdmin(AuditLog, admin.site)
+        self.assertFalse(model_admin.has_add_permission(request))
+        self.assertFalse(model_admin.has_change_permission(request))
+        self.assertFalse(model_admin.has_change_permission(request, log))
+        self.assertFalse(model_admin.has_delete_permission(request))
+        self.assertFalse(model_admin.has_delete_permission(request, log))
 
 
 # Open to all six roles by design, forever - not migrated later, never

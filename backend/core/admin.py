@@ -12,7 +12,19 @@ admin.site.register(Incident)
 admin.site.register(RiskScore)
 admin.site.register(Alert)
 admin.site.register(Referral)
-admin.site.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    # NFR21: the audit log is read only for everyone, superusers included.
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+admin.site.register(AuditLog, AuditLogAdmin)
 admin.site.register(Report)
 
 admin.site.site_header = 'EarlySense Administration'
