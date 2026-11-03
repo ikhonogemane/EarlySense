@@ -110,7 +110,9 @@ export default function AuditLog() {
                         </td>
                         <td style={styles.td}>
                           {log.target_type
-                            ? `${log.target_type} #${log.target_id}`
+                            ? log.target_id != null
+                              ? `${log.target_type} #${log.target_id}`
+                              : log.target_type
                             : "—"}
                         </td>
                         <td style={styles.td}>{log.ip_address || "—"}</td>
