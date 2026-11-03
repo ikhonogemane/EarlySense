@@ -23,7 +23,7 @@ learners_data = [
     {
         'sasams_id': '2024001', 'first_name': 'Amahle', 'surname': 'Dube',
         'date_of_birth': date(2010, 3, 14), 'grade': 9, 'class_group': '9B',
-        'gender': 'Female', 'home_town': 'Bankhara Bodulong',
+        'gender': 'Female', 'home_town': 'Platfontein',
         'distance_km': 12.5, 'guardian_name': 'S. Dube',
         'guardian_phone': '0762345678', 'income_index': 1,
         'enrolled_date': date(2024, 1, 15),
@@ -32,7 +32,7 @@ learners_data = [
     {
         'sasams_id': '2024002', 'first_name': 'Sipho', 'surname': 'Mthembu',
         'date_of_birth': date(2009, 7, 22), 'grade': 10, 'class_group': '10A',
-        'gender': 'Male', 'home_town': 'Wrenchville',
+        'gender': 'Male', 'home_town': 'Platfontein',
         'distance_km': 15.2, 'guardian_name': 'T. Mthembu',
         'guardian_phone': '0731234567', 'income_index': 1,
         'enrolled_date': date(2024, 1, 15),
@@ -41,7 +41,7 @@ learners_data = [
     {
         'sasams_id': '2024003', 'first_name': 'Thabo', 'surname': 'Nkosi',
         'date_of_birth': date(2011, 1, 5), 'grade': 8, 'class_group': '8C',
-        'gender': 'Male', 'home_town': 'Galeshewe',
+        'gender': 'Male', 'home_town': 'Platfontein',
         'distance_km': 18.0, 'guardian_name': 'M. Nkosi',
         'guardian_phone': '0829876543', 'income_index': 1,
         'enrolled_date': date(2024, 1, 15),
@@ -51,7 +51,7 @@ learners_data = [
     {
         'sasams_id': '2024004', 'first_name': 'Lerato', 'surname': 'Sithole',
         'date_of_birth': date(2010, 9, 18), 'grade': 9, 'class_group': '9C',
-        'gender': 'Female', 'home_town': 'Mothibistad',
+        'gender': 'Female', 'home_town': 'Homevale',
         'distance_km': 8.3, 'guardian_name': 'P. Sithole',
         'guardian_phone': '0641234567', 'income_index': 2,
         'enrolled_date': date(2024, 1, 15),
@@ -60,7 +60,7 @@ learners_data = [
     {
         'sasams_id': '2024005', 'first_name': 'Nokwanda', 'surname': 'Zulu',
         'date_of_birth': date(2009, 11, 30), 'grade': 10, 'class_group': '10B',
-        'gender': 'Female', 'home_town': 'Kuruman',
+        'gender': 'Female', 'home_town': 'Homevale',
         'distance_km': 6.1, 'guardian_name': 'B. Zulu',
         'guardian_phone': '0711234567', 'income_index': 2,
         'enrolled_date': date(2024, 1, 15),
@@ -69,7 +69,7 @@ learners_data = [
     {
         'sasams_id': '2024006', 'first_name': 'Bongani', 'surname': 'Khumalo',
         'date_of_birth': date(2011, 4, 12), 'grade': 8, 'class_group': '8A',
-        'gender': 'Male', 'home_town': 'Bankhara Bodulong',
+        'gender': 'Male', 'home_town': 'Roodepan',
         'distance_km': 11.0, 'guardian_name': 'L. Khumalo',
         'guardian_phone': '0791234567', 'income_index': 2,
         'enrolled_date': date(2024, 1, 15),
@@ -79,7 +79,7 @@ learners_data = [
     {
         'sasams_id': '2024007', 'first_name': 'Naledi', 'surname': 'Mokoena',
         'date_of_birth': date(2010, 6, 25), 'grade': 9, 'class_group': '9A',
-        'gender': 'Female', 'home_town': 'Kuruman',
+        'gender': 'Female', 'home_town': 'Hadison Park',
         'distance_km': 2.5, 'guardian_name': 'D. Mokoena',
         'guardian_phone': '0761111111', 'income_index': 3,
         'enrolled_date': date(2024, 1, 15),
@@ -88,7 +88,7 @@ learners_data = [
     {
         'sasams_id': '2024008', 'first_name': 'Lethabo', 'surname': 'Motsei',
         'date_of_birth': date(2009, 8, 14), 'grade': 10, 'class_group': '10A',
-        'gender': 'Male', 'home_town': 'Kuruman',
+        'gender': 'Male', 'home_town': 'Beaconsfield',
         'distance_km': 1.8, 'guardian_name': 'K. Motsei',
         'guardian_phone': '0762222222', 'income_index': 4,
         'enrolled_date': date(2024, 1, 15),
@@ -97,7 +97,7 @@ learners_data = [
     {
         'sasams_id': '2024009', 'first_name': 'Keabetswe', 'surname': 'Tlhapi',
         'date_of_birth': date(2011, 2, 8), 'grade': 8, 'class_group': '8B',
-        'gender': 'Female', 'home_town': 'Kuruman',
+        'gender': 'Female', 'home_town': 'Floors',
         'distance_km': 3.2, 'guardian_name': 'R. Tlhapi',
         'guardian_phone': '0763333333', 'income_index': 3,
         'enrolled_date': date(2024, 1, 15),
@@ -106,7 +106,7 @@ learners_data = [
     {
         'sasams_id': '2024010', 'first_name': 'Tebogo', 'surname': 'Setshedi',
         'date_of_birth': date(2008, 5, 19), 'grade': 11, 'class_group': '11A',
-        'gender': 'Male', 'home_town': 'Kuruman',
+        'gender': 'Male', 'home_town': 'Galeshewe',
         'distance_km': 4.0, 'guardian_name': 'N. Setshedi',
         'guardian_phone': '0764444444', 'income_index': 3,
         'enrolled_date': date(2024, 1, 15),
