@@ -285,7 +285,7 @@ export default function UploadCSV() {
                   guardian_name, guardian_phone, income_index
                   <br />
                   0001, Amahle, Dube, 9, 9A, Female, 2011-03-12, 2023-01-15,
-                  Kuruman, 3.5, Dube Amahle, 0721234501, 2
+                  Floors, 3.5, Dube Amahle, 0721234501, 2
                 </>
               )}
               {uploadType === "attendance" && (
