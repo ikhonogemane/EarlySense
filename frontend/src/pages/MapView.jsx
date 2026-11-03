@@ -6,18 +6,31 @@ import { getLearners } from "../services/api";
 import { isForbidden } from "../constants/roles";
 import "leaflet/dist/leaflet.css";
 
-const SCHOOL_POSITION = [-27.4541, 23.4432];
+// Kimberley Boys High School, Jubilee Street, Labram (OpenStreetMap way 465798397)
+const KBHS_POSITION_OSM = [-28.7492013, 24.7698827];
+const SCHOOL_POSITION = KBHS_POSITION_OSM;
 
+// Coordinates from OpenStreetMap (Nominatim). "Kimberley" is last so a
+// home_town such as "Galeshewe, Kimberley" matches the suburb first.
 const TOWN_COORDS = {
-  Kuruman: [-27.4541, 23.4432],
-  Mothibistad: [-27.3833, 23.4],
-  Wrenchville: [-27.47, 23.42],
-  "Bankhara Bodulong": [-27.5, 23.4],
-  Danielskuil: [-27.8833, 23.55],
-  Batlharos: [-27.55, 23.5],
-  Magojaneng: [-27.42, 23.52],
-  Dibeng: [-27.35, 23.48],
-  Kathu: [-27.6833, 23.05],
+  Galeshewe: [-28.723657, 24.7473964],
+  Roodepan: [-28.6648059, 24.7168903],
+  Homevale: [-28.6970686, 24.7320414],
+  Platfontein: [-28.7063157, 24.6454247],
+  Greenpoint: [-28.7749574, 24.7689887],
+  Beaconsfield: [-28.7515345, 24.7884106],
+  "Hadison Park": [-28.7539295, 24.7419397],
+  Floors: [-28.7181022, 24.7652032],
+  Kimberley: [-28.73833, 24.76389],
+};
+
+// Stable offset from the learner id (golden-angle spiral), so a dot keeps
+// its place when the page redraws or a filter changes.
+const idOffset = (id, spread) => {
+  const n = Math.abs(Number(id)) || 0;
+  const angle = n * 2.399963;
+  const radius = spread * Math.sqrt(((n % 50) + 1) / 50);
+  return [radius * Math.sin(angle), radius * Math.cos(angle)];
 };
 
 const getRiskColor = (level) => {
@@ -55,12 +68,9 @@ export default function MapView() {
       const townKey = Object.keys(TOWN_COORDS).find((t) =>
         l.home_town?.toLowerCase().includes(t.toLowerCase()),
       );
-      const coords = townKey
-        ? TOWN_COORDS[townKey]
-        : [
-            SCHOOL_POSITION[0] + (Math.random() - 0.5) * 0.2,
-            SCHOOL_POSITION[1] + (Math.random() - 0.5) * 0.2,
-          ];
+      const base = townKey ? TOWN_COORDS[townKey] : SCHOOL_POSITION;
+      const [dLat, dLng] = idOffset(l.id, townKey ? 0.005 : 0.1);
+      const coords = [base[0] + dLat, base[1] + dLng];
       return { ...l, coords };
     });
 
