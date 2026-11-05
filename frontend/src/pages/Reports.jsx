@@ -13,6 +13,17 @@ import {
   CheckCircle,
 } from "lucide-react";
 
+// The API returns `parameters` as a JSON object (Django JSONField), not a string.
+// Parsing it as a string threw during render and blanked the whole page, so read it safely.
+function reportFormat(parameters) {
+  try {
+    const obj = typeof parameters === "string" ? JSON.parse(parameters || "{}") : parameters;
+    return String((obj && obj.format) || "PDF").toUpperCase();
+  } catch {
+    return "PDF";
+  }
+}
+
 export default function Reports() {
   const [reports, setReports] = useState([]);
   const [reportType, setReportType] = useState("");
@@ -288,7 +299,7 @@ const handleGenerate = async (fmt) => {
                         {new Date(r.generated_at).toLocaleDateString()}
                       </td>
                       <td style={styles.td}>
-                        {JSON.parse(r.parameters || "{}").format || "PDF"}
+                        {reportFormat(r.parameters)}
                       </td>
                       <td style={styles.td}>
                         <button
