@@ -62,7 +62,7 @@ Open `backend\.env`, remove the leading `#` from the lines you need and fill in 
 python manage.py migrate
 python manage.py createsuperuser
 python create_demo_users.py     # creates the six demo users
-python seed_data.py             # optional: 500 synthetic learners (deletes existing learners first)
+python seed_data.py             # optional: 11 sample learners (deletes existing learners first)
 python manage.py runserver      # API at http://127.0.0.1:8000/api/
 ```
 
@@ -109,4 +109,4 @@ The main ones are listed here. The full list is in Section 3.4 of the Final Repo
 
 ## About the data
 
-This is a student project. All learner names and records in the demonstration data are synthetic.
+This is a student project. All learner names and records in the demonstration data are synthetic. The 500-learner dataset used in the report was loaded through the Upload Data screen from a CSV file kept outside this repository.
